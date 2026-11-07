@@ -234,7 +234,7 @@ WatchMark uses native **GitHub Milestones and Issues** to track upcoming work:
 | :--- | :--- | :--- |
 | **v1.0.0** | Core Architecture, SQLite WAL & VLC Telemetry | ✅ Completed |
 | **v1.1.0** | Filesystem Scanner, Triage Inbox & OS Keyring | ✅ Completed |
-| **v1.2.0** | Spotlight Recommendation, Timeline Virtualization & GPU Fix | 🚀 Current Stable |
+| **v1.2.1** | Spotlight Recommendation, Timeline Virtualization, GPU Fix & Watch History Overhaul | 🚀 Current Stable |
 | **v1.3.0** | Library Intelligence, Multi-Filtering & Deep Cast/Crew Metadata | 🔨 In Active Development |
 | **v1.4.0** | VLC Audio/Subtitle Track Switcher & Background Tray Daemon | 📋 Planned |
 | **v1.5.0** | Viewing Analytics Dashboard & Trakt/Letterboxd Data Portability | 📋 Planned |

@@ -7,24 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.2.1] - 2026-11-08
 
 ### Added
 * **Remove from History**: Remove a single play or a whole binge session from your watch history, with a 5-second **Undo**. Watched status and resume points are not affected.
 * **Clear History**: Clear your entire watch history after a confirmation prompt.
 * **History Filters**: Filter the timeline by All, TV Shows or Movies.
 * **New Activity Prompt**: If you watch something while scrolled down in History, a "New activity" pill lets you jump to the latest entries instead of losing your place.
+* **Crash Recovery Screens**: If a page fails to display, WatchMark now shows a recovery panel with **Try again** and **Reload app** instead of a blank window, and the rest of the app keeps working. The error is written to `WatchMark.log`.
 
 ### Changed
 * **Watch History Redesign**: The timeline is now a single-column list grouped by day, with daily totals, 16:9 thumbnails, clear Watched / Marked as watched / Archived / in-progress states, and a play count for repeat plays.
+* Day headings in History stay pinned directly under the top bar while you scroll.
+* The top bar now darkens as you scroll on every page, so content no longer shows through behind the search bar.
 * Older dates in History now include the year.
 
 ### Fixed
+* **Blank window on startup**: The app could open to an empty dark window as soon as the Dashboard finished loading. Fixed.
+* **Watch progress not saved to History**: Plays recorded from VLC always showed 0% and were never marked as watched in History, and abandoned plays (closed within the first seconds) were never cleaned up. Completion is now recorded when you close VLC.
 * History stopped loading older entries after the first page; the full history now loads as you scroll.
 * Binge sessions no longer split in two at page boundaries.
+* Day headings in History floated in the middle of the list and covered entries.
 * The **Archived** badge never appeared, and archived entries could be wrongly grouped with each other.
 * A single entry with missing data (such as an unknown runtime) could stop the whole History tab from loading.
 * History now refreshes after you finish watching in VLC or delete a show, and shows a clear error with **Try again** instead of an empty page if loading fails.
+
+> **Note on existing history:** plays recorded before 1.2.1 show 0% progress because of the bug above. Their real progress was never saved and can't be recovered automatically.
 
 ## [1.2.0] - 2026-09-26
 

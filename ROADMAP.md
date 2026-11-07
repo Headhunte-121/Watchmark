@@ -10,7 +10,8 @@ This document provides a public overview of completed milestones and upcoming fe
 | :--- | :--- | :--- | :--- |
 | **v1.0.0** | Core Architecture & VLC Telemetry | ✅ Completed | Shipped |
 | **v1.1.0** | Filesystem Scanner & Storage Safety | ✅ Completed | Shipped |
-| **v1.2.0** | Spotlight Recommendation & Timeline Virtualization | 🚀 Current Stable | Shipped |
+| **v1.2.0** | Spotlight Recommendation & Timeline Virtualization | ✅ Completed | Shipped |
+| **v1.2.1** | Watch History Overhaul & Stability Patch | 🚀 Current Stable | Shipped |
 | **v1.3.0** | Library Intelligence & Deep Metadata | 🔨 In Active Development | Q4 2026 |
 | **v1.4.0** | VLC Controls Pro & Background Automation | 📋 Planned | Q1 2027 |
 | **v1.5.0** | Viewing Analytics & Data Portability | 📋 Planned | Q2 2027 |
@@ -35,13 +36,19 @@ This document provides a public overview of completed milestones and upcoming fe
 * **Automated Database Safety:** In-app backups with SHA-256 verification and SQLite `VACUUM` optimization.
 * **OS Credential Keyring:** Secure storage of API keys using native Windows Credential Manager / macOS Keychain.
 
-### ✅ v1.2.0 — Cinema Spotlight & Timeline Virtualization (Current Release)
+### ✅ v1.2.0 — Cinema Spotlight & Timeline Virtualization
 * **Intelligent Hero Spotlight:** 8-dimensional weighted recommendation scoring prioritizing in-progress shows, season finales, and new episodes.
 * **BingeBlock Accordion Timeline:** Master-detail accordion grouping consecutive episodes watched within 6 hours.
 * **Midnight Crossover Detection:** Displays a night icon when viewing sessions cross past midnight.
 * **DOM Virtualization:** High-performance intersection observer engine allowing 1,000+ shows to scroll at a smooth 60 FPS.
 * **WebView2 GPU Optimization:** Eliminated backdrop-filter composition overhead, reducing idle GPU usage from ~70% to 0.0% – 1.0%.
 * **Global Quick Search:** Floating search bar filtering library grids and dashboard rows in real time.
+
+### ✅ v1.2.1 — Watch History Overhaul & Stability Patch (Current Release)
+* **Rebuilt Watch History:** Day-grouped timeline with pinned day headings, daily totals, filters (All / TV Shows / Movies), and complete history loading as you scroll.
+* **History Management:** Remove a play or a whole binge session with Undo, or clear the full history.
+* **Crash Recovery:** Pages that fail to render show a recovery panel instead of a blank window, with errors written to `WatchMark.log`.
+* **Playback Tracking Fix:** Completion of VLC plays is recorded in History again.
 
 ---
 
