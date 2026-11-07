@@ -395,7 +395,7 @@ pub async fn vlc_heartbeat(
                                     params![last_time_seconds as i32, episode_id],
                                 );
                                 let _ = conn.execute(
-                                    "UPDATE History SET completion_ratio=?, pause_count=? WHERE episode_id=? AND timestamp=? AND session_id=?",
+                                    "UPDATE History SET completion_ratio=?, pause_count=? WHERE episode_id=? AND start_time=? AND session_id=?",
                                     params![high_water_mark, pause_count, episode_id, start_dt_str, session_id],
                                 );
                             }
@@ -504,7 +504,7 @@ pub async fn vlc_heartbeat(
                 params![episode_id],
             );
             let _ = conn.execute(
-                "UPDATE History SET completion_ratio=1.0, end_time=? WHERE episode_id=? AND timestamp=? AND session_id=?",
+                "UPDATE History SET completion_ratio=1.0, end_time=? WHERE episode_id=? AND start_time=? AND session_id=?",
                 params![end_dt_str, episode_id, start_dt_str, session_id],
             );
             emitted_status = "Completed".to_string();
@@ -517,7 +517,7 @@ pub async fn vlc_heartbeat(
                 params![last_time_seconds as i32, episode_id],
             );
             let _ = conn.execute(
-                "UPDATE History SET completion_ratio=?, end_time=? WHERE episode_id=? AND timestamp=? AND session_id=?",
+                "UPDATE History SET completion_ratio=?, end_time=? WHERE episode_id=? AND start_time=? AND session_id=?",
                 params![high_water_mark, end_dt_str, episode_id, start_dt_str, session_id],
             );
             emitted_status = "Watching".to_string();
@@ -583,7 +583,7 @@ pub async fn vlc_heartbeat(
             // In both Oops guard and Zero-Second Reset, the session history row must be deleted
             // to keep the History table clean.
             let _ = conn.execute(
-                "DELETE FROM History WHERE episode_id=? AND timestamp=? AND session_id=?",
+                "DELETE FROM History WHERE episode_id=? AND start_time=? AND session_id=?",
                 params![episode_id, start_dt_str, session_id],
             );
 
