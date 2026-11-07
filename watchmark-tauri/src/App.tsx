@@ -54,6 +54,11 @@ function App() {
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isHeaderScrolled, setIsHeaderScrolled] = useState(false);
+
+  // A newly shown view starts at the top until it reports a scroll position.
+  useEffect(() => {
+    setIsHeaderScrolled(false);
+  }, [currentView, selectedMediaId]);
   const { isCinemaMode, initialized, initializeSettings, setApiAuthorized, searchQuery: globalSearchQuery, setSearchQuery: setGlobalSearchQuery } = useAppStore();
 
   const isImporting = useTaskStore((state) => state.isImporting);
@@ -102,12 +107,15 @@ function App() {
     initializeSettings();
     useAppStore.getState().prefetchHistory();
 
-    const handleWindowScroll = () => {
-        setIsHeaderScrolled(window.scrollY > 10);
+    // Views scroll inside their own containers, and scroll events don't bubble,
+    // so listen in the capture phase to see scrolls from any container.
+    const handleWindowScroll = (event: Event) => {
+        const target = event.target;
+        const top = target instanceof Element ? target.scrollTop : window.scrollY;
+        setIsHeaderScrolled(top > 10);
     };
 
-    // Add global scroll listener to window
-    window.addEventListener("scroll", handleWindowScroll);
+    document.addEventListener("scroll", handleWindowScroll, { capture: true, passive: true });
 
     // Setup dynamic font
     import("@tauri-apps/api/core").then(({ invoke, convertFileSrc }) => {
@@ -160,7 +168,7 @@ function App() {
     }
 
     return () => {
-        window.removeEventListener("scroll", handleWindowScroll);
+        document.removeEventListener("scroll", handleWindowScroll, { capture: true });
     };
   }, [initializeSettings]);
 

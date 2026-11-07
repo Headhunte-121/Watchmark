@@ -85,6 +85,15 @@ function useHiddenIds(): Set<number> {
   return hiddenHistIds;
 }
 
+interface ListState {
+  groups: HistoryGroup[];
+  cursor: HistoryCursor | null;
+  hasMore: boolean;
+  status: "loading" | "ready" | "error";
+}
+
+const EMPTY_LIST: ListState = { groups: [], cursor: null, hasMore: false, status: "loading" };
+
 const isHistoryPage = (v: unknown): v is HistoryPage =>
   !!v && typeof v === "object" && Array.isArray((v as HistoryPage).groups);
 
@@ -110,23 +119,42 @@ export default function History({ onNavigateToMedia }: { onNavigateToMedia: (med
   const hiddenIds = useHiddenIds();
 
   const [filter, setFilter] = useState<HistoryFilter>("All");
-  const [groups, setGroups] = useState<HistoryGroup[]>([]);
-  const [cursor, setCursor] = useState<HistoryCursor | null>(null);
-  const [hasMore, setHasMore] = useState(false);
-  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [list, setList] = useState<ListState>(EMPTY_LIST);
   const [errorText, setErrorText] = useState("");
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreFailed, setLoadMoreFailed] = useState(false);
   const [newActivity, setNewActivity] = useState(false);
   const [launchingId, setLaunchingId] = useState<number | null>(null);
   const [isClearing, setIsClearing] = useState(false);
+  const { groups, hasMore, status } = list;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const requestSeq = useRef(0);
-  const loadMoreInFlight = useRef(false);
-  const latest = useRef({ filter, groups, cursor, hasMore, status });
-  latest.current = { filter, groups, cursor, hasMore, status };
+  /** Token of the load-more request in flight, or null. */
+  const loadMoreToken = useRef<object | null>(null);
+  // Synchronous mirrors of state, read by async callbacks and the unmount
+  // snapshot. They are only written through commit() / setFilterSync()
+  // together with state, so they can never disagree (StrictMode remounts and
+  // the unmount snapshot read them before React re-renders).
+  const listRef = useRef<ListState>(EMPTY_LIST);
+  const filterRef = useRef<HistoryFilter>("All");
+
+  const commit = useCallback((next: ListState | ((prev: ListState) => ListState)) => {
+    const value = typeof next === "function" ? next(listRef.current) : next;
+    listRef.current = value;
+    setList(value);
+  }, []);
+
+  const setFilterSync = useCallback((f: HistoryFilter) => {
+    filterRef.current = f;
+    setFilter(f);
+  }, []);
+
+  const cancelLoadMore = useCallback(() => {
+    loadMoreToken.current = null;
+    setLoadingMore(false);
+  }, []);
 
   const fetchPage = useCallback(
     async (after: HistoryCursor | null, f: HistoryFilter): Promise<HistoryPage | null> => {
@@ -142,23 +170,22 @@ export default function History({ onNavigateToMedia }: { onNavigateToMedia: (med
     [asyncInvoke],
   );
 
-  const applyFirstPage = useCallback((page: HistoryPage) => {
-    setGroups(page.groups);
-    setCursor(page.next_cursor);
-    setHasMore(page.has_more);
-    setLoadMoreFailed(false);
-    setNewActivity(false);
-    setStatus("ready");
-  }, []);
+  const applyFirstPage = useCallback(
+    (page: HistoryPage) => {
+      cancelLoadMore();
+      commit({ groups: page.groups, cursor: page.next_cursor, hasMore: page.has_more, status: "ready" });
+      setLoadMoreFailed(false);
+      setNewActivity(false);
+    },
+    [commit, cancelLoadMore],
+  );
 
   /** Loads the newest page, replacing the list. */
   const loadFirst = useCallback(
     async (f: HistoryFilter) => {
       const seq = ++requestSeq.current;
-      loadMoreInFlight.current = false;
-      setStatus("loading");
-      setGroups([]);
-      setLoadingMore(false);
+      cancelLoadMore();
+      commit({ ...EMPTY_LIST, status: "loading" });
       try {
         const page = await fetchPage(null, f);
         if (!page || seq !== requestSeq.current) return;
@@ -168,10 +195,10 @@ export default function History({ onNavigateToMedia }: { onNavigateToMedia: (med
         if (seq !== requestSeq.current) return;
         logger.error("Failed to load watch history", e);
         setErrorText(describeError(e));
-        setStatus("error");
+        commit({ ...EMPTY_LIST, status: "error" });
       }
     },
-    [fetchPage, applyFirstPage],
+    [fetchPage, applyFirstPage, commit, cancelLoadMore],
   );
 
   /**
@@ -180,14 +207,21 @@ export default function History({ onNavigateToMedia }: { onNavigateToMedia: (med
    */
   const revalidate = useCallback(async () => {
     const seq = requestSeq.current;
-    const f = latest.current.filter;
+    const f = filterRef.current;
     try {
       const page = await fetchPage(null, f);
-      if (!page || seq !== requestSeq.current || f !== latest.current.filter) return;
-      const current = latest.current.groups;
-      if (pageSignature(page.groups, page.groups.length) === pageSignature(current, page.groups.length)) return;
+      if (!page || seq !== requestSeq.current || f !== filterRef.current) return;
+      const current = listRef.current;
+      const same =
+        pageSignature(page.groups, page.groups.length) === pageSignature(current.groups, page.groups.length);
+      if (same && current.status === "ready") {
+        // Newest entries unchanged. A restored view without a paging cursor
+        // (only the first page loaded) takes the fresh cursor.
+        if (!current.cursor && current.groups.length <= page.groups.length) applyFirstPage(page);
+        return;
+      }
       const atTop = (containerRef.current?.scrollTop ?? 0) < AUTO_APPLY_SCROLL_THRESHOLD;
-      if (atTop || latest.current.status !== "ready" || current.length === 0) {
+      if (atTop || current.status !== "ready" || current.groups.length === 0) {
         requestSeq.current++;
         applyFirstPage(page);
       } else {
@@ -199,63 +233,65 @@ export default function History({ onNavigateToMedia }: { onNavigateToMedia: (med
   }, [fetchPage, applyFirstPage]);
 
   const loadMore = useCallback(async () => {
-    const { hasMore: more, cursor: after, status: st, filter: f } = latest.current;
-    if (loadMoreInFlight.current || !more || !after || st !== "ready") return;
-    loadMoreInFlight.current = true;
+    const { hasMore: more, cursor: after, status: st } = listRef.current;
+    if (loadMoreToken.current || !more || !after || st !== "ready") return;
+    const token = {};
+    loadMoreToken.current = token;
     const seq = requestSeq.current;
+    const f = filterRef.current;
     setLoadingMore(true);
     setLoadMoreFailed(false);
     try {
       const page = await fetchPage(after, f);
-      if (!page || seq !== requestSeq.current) return;
-      setGroups(prev => {
-        const seen = new Set(prev.map(g => g.id));
-        return [...prev, ...page.groups.filter(g => !seen.has(g.id))];
+      if (!page || seq !== requestSeq.current || loadMoreToken.current !== token) return;
+      commit(prev => {
+        const seen = new Set(prev.groups.map(g => g.id));
+        return {
+          ...prev,
+          groups: [...prev.groups, ...page.groups.filter(g => !seen.has(g.id))],
+          cursor: page.next_cursor,
+          hasMore: page.has_more,
+        };
       });
-      setCursor(page.next_cursor);
-      setHasMore(page.has_more);
     } catch (e) {
-      if (seq !== requestSeq.current) return;
+      if (seq !== requestSeq.current || loadMoreToken.current !== token) return;
       logger.error("Failed to load older history", e);
       setLoadMoreFailed(true);
     } finally {
-      if (seq === requestSeq.current) {
-        loadMoreInFlight.current = false;
+      if (loadMoreToken.current === token) {
+        loadMoreToken.current = null;
         setLoadingMore(false);
       }
     }
-  }, [fetchPage]);
+  }, [fetchPage, commit]);
 
   // Mount: restore the previous view instantly, then make sure it's current.
   useEffect(() => {
     const { historySnapshot, historyPrefetch, historyVersion: version } = useAppStore.getState();
     if (historySnapshot && historySnapshot.version === version) {
-      setFilter(historySnapshot.filter);
-      latest.current.filter = historySnapshot.filter;
-      setGroups(historySnapshot.groups);
-      latest.current.groups = historySnapshot.groups;
-      setCursor(historySnapshot.cursor);
-      setHasMore(historySnapshot.hasMore);
-      setStatus("ready");
-      latest.current.status = "ready";
+      setFilterSync(historySnapshot.filter);
+      commit({
+        groups: historySnapshot.groups,
+        cursor: historySnapshot.cursor,
+        hasMore: historySnapshot.hasMore,
+        status: "ready",
+      });
       requestAnimationFrame(() => {
         if (containerRef.current) containerRef.current.scrollTop = historySnapshot.scrollTop;
         revalidate();
       });
     } else if (historyPrefetch && historyPrefetch.version === version) {
       applyFirstPage(historyPrefetch.page);
-      latest.current.groups = historyPrefetch.page.groups;
-      latest.current.status = "ready";
       revalidate();
     } else {
       loadFirst("All");
     }
 
     return () => {
-      const s = latest.current;
+      const s = listRef.current;
       if (s.status === "ready") {
         setHistorySnapshot({
-          filter: s.filter,
+          filter: filterRef.current,
           groups: s.groups,
           cursor: s.cursor,
           hasMore: s.hasMore,
@@ -280,12 +316,12 @@ export default function History({ onNavigateToMedia }: { onNavigateToMedia: (med
   useEffect(() => {
     const unlisten = listen<{ media_id: number }>("media-deleted", event => {
       const id = event.payload?.media_id;
-      if (typeof id === "number") setGroups(prev => prev.filter(g => g.media_id !== id));
+      if (typeof id === "number") commit(prev => ({ ...prev, groups: prev.groups.filter(g => g.media_id !== id) }));
     });
     return () => {
       unlisten.then(fn => fn()).catch(() => {});
     };
-  }, []);
+  }, [commit]);
 
   // Infinite scroll.
   useEffect(() => {
@@ -305,10 +341,9 @@ export default function History({ onNavigateToMedia }: { onNavigateToMedia: (med
   // ------------------------------------------------------------------ actions
 
   const changeFilter = (f: HistoryFilter) => {
-    if (f === filter) return;
+    if (f === filterRef.current) return;
     logger.click(`History filter '${f}'`);
-    setFilter(f);
-    latest.current.filter = f;
+    setFilterSync(f);
     loadFirst(f);
   };
 
@@ -369,13 +404,11 @@ export default function History({ onNavigateToMedia }: { onNavigateToMedia: (med
     try {
       const removed = await invoke<number>("clear_history");
       requestSeq.current++;
+      cancelLoadMore();
       hiddenHistIds.clear();
       notifyHidden();
-      setGroups([]);
-      setCursor(null);
-      setHasMore(false);
+      commit({ ...EMPTY_LIST, status: "ready" });
       setNewActivity(false);
-      setStatus("ready");
       toast.success(`Watch history cleared (${removed} entr${removed === 1 ? "y" : "ies"}).`);
     } catch (e) {
       logger.error("Failed to clear history", e);
@@ -420,8 +453,11 @@ export default function History({ onNavigateToMedia }: { onNavigateToMedia: (med
   // ------------------------------------------------------------------ render
 
   return (
-    <div id="turbo-scroll-history" ref={containerRef} className="h-full overflow-y-auto px-6 sm:px-12 pt-24 pb-24">
-      <div className="max-w-4xl mx-auto">
+    // No padding on the scroll container itself: Chrome offsets sticky
+    // children by the scroller's padding, which would float the day headings
+    // 96px below the app header. Padding lives on the inner wrapper instead.
+    <div id="turbo-scroll-history" ref={containerRef} className="h-full overflow-y-auto">
+      <div className="max-w-4xl mx-auto box-content px-6 sm:px-12 pt-24 pb-24">
         <header className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-8">
           <div>
             <h1 className="text-4xl font-extrabold tracking-tight">Watch History</h1>
@@ -512,8 +548,12 @@ export default function History({ onNavigateToMedia }: { onNavigateToMedia: (med
 
         {status === "ready" &&
           sections.map(section => (
-            <section key={section.key} className="mb-10" aria-label={formatDayHeading(section.key)}>
-              <div className="sticky top-[64px] z-30 -mx-2 px-2 py-2 mb-3 bg-[#0D0F14]/90 backdrop-blur-md flex items-baseline justify-between">
+            // A sticky heading is confined to its section's content box and gets
+            // pushed up by the section's bottom edge; the spacer at the end of the
+            // section is what keeps it from sliding over the last card.
+            <section key={section.key} aria-label={formatDayHeading(section.key)}>
+              {/* Sticks directly under the 64px (h-16) app header; opaque so rows never show through. */}
+              <div className="sticky top-16 z-20 -mx-2 px-2 pt-3 pb-2 mb-3 bg-[#0D0F14] border-b border-white/5 flex items-baseline justify-between">
                 <h2 className="text-lg font-bold text-white">{formatDayHeading(section.key)}</h2>
                 <span className="text-xs text-[#8E929C] tabular-nums">
                   {section.groups.length} {section.groups.length === 1 ? "title" : "titles"} · {formatDuration(section.minutes)}
@@ -544,6 +584,8 @@ export default function History({ onNavigateToMedia }: { onNavigateToMedia: (med
                   </li>
                 ))}
               </ul>
+              {/* Spacer: gives the sticky heading room to be pushed off-screen without covering the last card. */}
+              <div aria-hidden="true" className="h-16" />
             </section>
           ))}
 
