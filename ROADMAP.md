@@ -49,6 +49,7 @@ This document provides a public overview of completed milestones and upcoming fe
 * **History Management:** Remove a play or a whole binge session with Undo, or clear the full history.
 * **Crash Recovery:** Pages that fail to render show a recovery panel instead of a blank window, with errors written to `WatchMark.log`.
 * **Playback Tracking Fix:** Completion of VLC plays is recorded in History again.
+* **Verified Backups:** SHA-256 checksum files for every backup, verified on restore, with a configurable retention limit (default 5).
 
 ---
 

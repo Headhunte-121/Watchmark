@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **History Filters**: Filter the timeline by All, TV Shows or Movies.
 * **New Activity Prompt**: If you watch something while scrolled down in History, a "New activity" pill lets you jump to the latest entries instead of losing your place.
 * **Crash Recovery Screens**: If a page fails to display, WatchMark now shows a recovery panel with **Try again** and **Reload app** instead of a blank window, and the rest of the app keeps working. The error is written to `WatchMark.log`.
+* **Backup Retention Setting**: Choose how many automatic backups to keep (1–50) in **Settings → System**. The default is now 5 (previously a fixed 3).
 
 ### Changed
 * **Watch History Redesign**: The timeline is now a single-column list grouped by day, with daily totals, 16:9 thumbnails, clear Watched / Marked as watched / Archived / in-progress states, and a play count for repeat plays.
@@ -24,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 * **Blank window on startup**: The app could open to an empty dark window as soon as the Dashboard finished loading. Fixed.
+* **Backup integrity**: Every database backup now gets a SHA-256 checksum file. When you restore a backup that has one, WatchMark verifies it first and refuses a damaged or altered backup instead of replacing your library with it.
 * **Watch progress not saved to History**: Plays recorded from VLC always showed 0% and were never marked as watched in History, and abandoned plays (closed within the first seconds) were never cleaned up. Completion is now recorded when you close VLC.
 * History stopped loading older entries after the first page; the full history now loads as you scroll.
 * Binge sessions no longer split in two at page boundaries.
@@ -45,6 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **Edge-to-Edge Hero Banner**: 450px cinematic hero banner with multi-stop diagonal gradient fades and instant **Resume** actions.
 * **Global Quick Search**: Floating dark-glass search input in the top navigation bar with instant client-side filtering across Dashboard rows and Library grids.
 * **Accessibility & Power Optimizations**: Integrated `useReducedMotion` hooks so heavy layout transitions instantaneously drop to 0s when OS battery-saver or reduced-motion flags are active.
+* **Upcoming Airings Row**: Dashboard row listing the next scheduled episodes of your tracked shows, with "Airing Today" highlights.
+* **New Season Alerts**: Dismissible Dashboard banner announcing when a tracked show gets a new season.
+* **Background Episode Sync**: Shortly after launch, WatchMark checks TMDB for new seasons, newly scheduled episodes and changed air dates on your tracked shows.
 
 ### Changed
 * **History Data Transfer Object**: Standardized DTO payload key to `ui_type` (`"SINGLE"` vs `"BINGE"`), eliminating potential SQL and JavaScript reserved keyword collisions.
