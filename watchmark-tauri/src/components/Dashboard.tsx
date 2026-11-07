@@ -204,7 +204,18 @@ export default function Dashboard({ onMediaSelect, refreshTrigger, searchQuery =
     const tot = (activeHero.runtime || 0) * 60;
     return `${formatClock(pos)} / ${formatClock(tot)}`;
   }, [activeHero]);
-  
+
+  // Must stay above the loading early-return below: hooks have to run in the
+  // same order on every render (Rules of Hooks).
+  const filteredAirings = useMemo(() => {
+    if (!searchQuery) return upcomingAirings;
+    const q = searchQuery.toLowerCase();
+    return upcomingAirings.filter(a =>
+      a.show_title?.toLowerCase().includes(q) ||
+      a.ep_title?.toLowerCase().includes(q)
+    );
+  }, [upcomingAirings, searchQuery]);
+
   if (!data) {
     // Skeleton Loading State
     return (
@@ -256,15 +267,6 @@ export default function Dashboard({ onMediaSelect, refreshTrigger, searchQuery =
     !searchQuery ||
     m.title?.toLowerCase().includes(searchQuery.toLowerCase())
   ) || [];
-
-  const filteredAirings = useMemo(() => {
-    if (!searchQuery) return upcomingAirings;
-    const q = searchQuery.toLowerCase();
-    return upcomingAirings.filter(a =>
-      a.show_title?.toLowerCase().includes(q) ||
-      a.ep_title?.toLowerCase().includes(q)
-    );
-  }, [upcomingAirings, searchQuery]);
 
   return (
     <div className="flex-1 overflow-y-auto px-10 py-6 pb-24 pt-24 scrollbar-hide relative w-full h-full">
