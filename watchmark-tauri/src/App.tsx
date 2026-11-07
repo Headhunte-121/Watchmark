@@ -89,7 +89,7 @@ function App() {
   useEffect(() => {
     logger.app("WatchMark Frontend successfully mounted.");
     initializeSettings();
-    useAppStore.getState().fetchFastHistory();
+    useAppStore.getState().prefetchHistory();
 
     const handleWindowScroll = () => {
         setIsHeaderScrolled(window.scrollY > 10);
@@ -156,11 +156,23 @@ function App() {
   useEffect(() => {
     const unlisten = listen("vlc-closed", () => {
       setRefreshTrigger(prev => prev + 1);
+      useAppStore.getState().bumpHistoryVersion();
     });
 
     const unlistenSessionEnded = listen("vlc-session-ended", () => {
       // 4.16.2 Global UI Invalidation (No-Refresh Sync)
       setRefreshTrigger(prev => prev + 1);
+      useAppStore.getState().bumpHistoryVersion();
+    });
+
+    // Removals made from the History tab: refresh dashboard stats only.
+    // The History tab already reflects the change locally.
+    const unlistenHistoryChanged = listen("history-changed", () => {
+      setRefreshTrigger(prev => prev + 1);
+    });
+
+    const unlistenMediaDeleted = listen("media-deleted", () => {
+      useAppStore.getState().bumpHistoryVersion();
     });
 
     const unlistenResize = listen("tauri://resize", () => {
@@ -175,6 +187,7 @@ function App() {
         useTaskStore.getState().setProgress(event.payload.progress, event.payload.total, event.payload.isImporting);
         if (!event.payload.isImporting) {
             setRefreshTrigger(prev => prev + 1);
+            useAppStore.getState().bumpHistoryVersion();
         }
       }
     );
@@ -261,6 +274,8 @@ function App() {
     return () => {
       unlisten.then(fn => fn());
       unlistenSessionEnded.then(fn => fn());
+      unlistenHistoryChanged.then(fn => fn());
+      unlistenMediaDeleted.then(fn => fn());
       unlistenResize.then(fn => fn());
       unlistenProgress.then(fn => fn());
       unlistenSyncProgress.then(fn => fn());

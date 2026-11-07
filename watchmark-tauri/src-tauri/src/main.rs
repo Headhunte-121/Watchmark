@@ -795,6 +795,8 @@ fn main() {
             commands::ignore_unmatched_group,
             commands::fetch_unmatched_files,
             commands::fetch_history,
+            commands::delete_history_entries,
+            commands::clear_history,
             commands::run_scan_directory,
             commands::cancel_active_scan,
             commands::pause_active_scan,

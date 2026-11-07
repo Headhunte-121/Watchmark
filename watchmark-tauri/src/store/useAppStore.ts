@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { invoke } from '@tauri-apps/api/core';
 import { logger } from '../utils/logger';
+import type { HistoryPage, HistorySnapshot } from '../components/history/historyTypes';
 
 interface LibraryPreference {
   sortBy: string;
@@ -14,21 +15,26 @@ interface AppState {
   initialized: boolean;
   isApiAuthorized: boolean;
   isOffline: boolean;
-  fastHistory: any[];
   searchQuery: string;
   libraryPreferences: {
     TV: LibraryPreference;
     Movie: LibraryPreference;
   };
-  historyState: { scrollPos: number; history: any[]; page: number; hasMore: boolean; topPadding: number } | null;
-  setHistoryState: (state: { scrollPos: number; history: any[]; page: number; hasMore: boolean; topPadding: number } | null) => void;
+  /** Bumped whenever watch history may have changed outside the History tab. */
+  historyVersion: number;
+  /** Last History tab view, restored when the user returns to the tab. */
+  historySnapshot: (HistorySnapshot & { version: number }) | null;
+  /** First page fetched at boot so the tab opens instantly. */
+  historyPrefetch: { page: HistoryPage; version: number } | null;
+  bumpHistoryVersion: () => void;
+  setHistorySnapshot: (snapshot: HistorySnapshot | null) => void;
   setSearchQuery: (query: string) => void;
   setLibraryPreference: (type: 'TV' | 'Movie', key: keyof LibraryPreference, value: any) => void;
   setCinemaMode: (mode: boolean) => Promise<void>;
   setApiAuthorized: (authorized: boolean) => void;
   setOffline: (offline: boolean) => void;
   initializeSettings: () => Promise<void>;
-  fetchFastHistory: () => Promise<void>;
+  prefetchHistory: () => Promise<void>;
 }
 
 export const useAppStore = create<AppState>()(
@@ -38,14 +44,17 @@ export const useAppStore = create<AppState>()(
   initialized: false,
   isApiAuthorized: true,
   isOffline: false,
-  fastHistory: [],
   searchQuery: "",
-  historyState: null,
+  historyVersion: 0,
+  historySnapshot: null,
+  historyPrefetch: null,
   libraryPreferences: {
     TV: { sortBy: "Recently Added", hideCompleted: false, scrollPos: 0 },
     Movie: { sortBy: "Recently Added", hideCompleted: false, scrollPos: 0 },
   },
-  setHistoryState: (state) => set({ historyState: state }),
+  bumpHistoryVersion: () => set((state) => ({ historyVersion: state.historyVersion + 1 })),
+  setHistorySnapshot: (snapshot) =>
+    set((state) => ({ historySnapshot: snapshot ? { ...snapshot, version: state.historyVersion } : null })),
   setSearchQuery: (query: string) => set({ searchQuery: query }),
   setLibraryPreference: (type, key, value) => set((state) => ({
     libraryPreferences: {
@@ -63,12 +72,15 @@ export const useAppStore = create<AppState>()(
     // Note: We intentionally do not auto-save to the backend here.
     // The SettingsView component handles batching and saving via the user's explicit action.
   },
-  fetchFastHistory: async () => {
+  prefetchHistory: async () => {
+    const version = get().historyVersion;
     try {
-      const history = await invoke('fetch_history', { requestId: "fast_history_init", page: 0, pageSize: 10 });
-      set({ fastHistory: history as any[] });
+      const page = await invoke<HistoryPage>('fetch_history', { requestId: crypto.randomUUID(), cursor: null, pageSize: 40, mediaType: null });
+      if (page && Array.isArray(page.groups) && get().historyVersion === version) {
+        set({ historyPrefetch: { page, version } });
+      }
     } catch (e) {
-      logger.error("Failed to load fast history", e);
+      logger.error("Failed to prefetch watch history", e);
     }
   },
   initializeSettings: async () => {

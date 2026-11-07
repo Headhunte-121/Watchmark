@@ -2749,221 +2749,482 @@ pub fn fetch_unmatched_files() -> Result<Vec<UnmatchedFile>, AppError> {
     })
 }
 
-#[tauri::command]
-#[tracing::instrument(level = "debug", skip(state))]
-pub async fn fetch_history(
-    request_id: String,
-    page: Option<u32>,
-    page_size: Option<u32>,
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<Value>, AppError> {
-    let _permit = state.read_semaphore.acquire().await.unwrap();
+// ---------------------------------------------------------------------------
+// Watch History
+// ---------------------------------------------------------------------------
+//
+// History is served with keyset (cursor) pagination over (timestamp, id) so
+// pages never skip or duplicate rows while new plays are being recorded.
+// Rows are grouped into viewing sessions server-side; a page is always closed
+// on a session boundary so a single session never gets split across pages.
 
-    let token = CancellationToken::new();
-    {
-        let mut tokens = state.cancel_tokens.write().unwrap();
-        tokens.insert(request_id.clone(), token.clone());
+/// Two plays of the same title belong to the same session if they are less
+/// than this many seconds apart (or share a VLC session id).
+const HISTORY_SESSION_GAP_SECS: i64 = 6 * 60 * 60;
+const HISTORY_DEFAULT_PAGE_SIZE: u32 = 40;
+const HISTORY_MAX_PAGE_SIZE: u32 = 200;
+/// Extra rows a page may read past its size to finish the session in progress.
+const HISTORY_MAX_BLOCK_EXTENSION: u32 = 500;
+const HISTORY_COMPLETION_THRESHOLD: f64 = 0.9;
+const HISTORY_MAX_DELETE_BATCH: usize = 5000;
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub struct HistoryCursor {
+    pub timestamp: i64,
+    pub id: i64,
+}
+
+struct HistoryRow {
+    hist_id: i64,
+    timestamp: i64,
+    session_id: Option<String>,
+    is_legacy: bool,
+    is_manual: bool,
+    completion_ratio: f64,
+    pause_count: i64,
+    episode_id: i64,
+    season_num: i64,
+    ep_num: i64,
+    ep_title: String,
+    raw_still_path: String,
+    raw_air_date: String,
+    runtime: i64,
+    resume_position: i64,
+    media_id: i64,
+    show_title: String,
+    raw_poster_path: String,
+    raw_backdrop_path: String,
+    media_type: String,
+    file_path: Option<String>,
+}
+
+impl HistoryRow {
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        let session_id: Option<String> = row.get(2)?;
+        Ok(HistoryRow {
+            hist_id: row.get(0)?,
+            timestamp: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+            session_id: session_id.filter(|s| !s.trim().is_empty()),
+            is_legacy: row.get::<_, Option<i64>>(3)?.unwrap_or(0) != 0,
+            is_manual: row.get::<_, Option<String>>(4)?.map_or(true, |s| s.trim().is_empty()),
+            pause_count: row.get::<_, Option<i64>>(5)?.unwrap_or(0).max(0),
+            completion_ratio: row
+                .get::<_, Option<f64>>(6)?
+                .filter(|r| r.is_finite())
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0),
+            episode_id: row.get(7)?,
+            season_num: row.get::<_, Option<i64>>(8)?.unwrap_or(0).max(0),
+            ep_num: row.get::<_, Option<i64>>(9)?.unwrap_or(0).max(0),
+            ep_title: row.get::<_, Option<String>>(10)?.unwrap_or_default(),
+            raw_still_path: row.get::<_, Option<String>>(11)?.unwrap_or_default(),
+            raw_air_date: row.get::<_, Option<String>>(12)?.unwrap_or_default(),
+            runtime: row.get::<_, Option<i64>>(13)?.unwrap_or(0).max(0),
+            resume_position: row.get::<_, Option<i64>>(14)?.unwrap_or(0).max(0),
+            media_id: row.get(15)?,
+            show_title: row.get::<_, Option<String>>(16)?.unwrap_or_default(),
+            raw_poster_path: row.get::<_, Option<String>>(17)?.unwrap_or_default(),
+            raw_backdrop_path: row.get::<_, Option<String>>(18)?.unwrap_or_default(),
+            media_type: row.get::<_, Option<String>>(19)?.unwrap_or_default(),
+            file_path: row
+                .get::<_, Option<String>>(20)?
+                .filter(|p| !p.trim().is_empty()),
+        })
     }
 
-    let cancel_tokens = state.cancel_tokens.clone();
-    let high_performance_mode = state.settings.read().unwrap().high_performance_mode;
-
-    let mut poster_size = "w500".to_string();
-    if let Ok(Some(monitor)) = app.primary_monitor() {
-        if monitor.scale_factor() > 1.0 {
-            poster_size = "original".to_string();
+    /// "archived" (backdated import), "marked" (bulk mark-as-watched),
+    /// "completed" (played past the threshold) or "partial".
+    fn watch_state(&self) -> &'static str {
+        if self.is_legacy {
+            "archived"
+        } else if self.is_manual {
+            "marked"
+        } else if self.completion_ratio >= HISTORY_COMPLETION_THRESHOLD {
+            "completed"
+        } else {
+            "partial"
         }
     }
+
+    /// Minutes of this title actually watched in this play.
+    fn watched_minutes(&self) -> i64 {
+        match self.watch_state() {
+            "partial" => (self.runtime as f64 * self.completion_ratio).round() as i64,
+            _ => self.runtime,
+        }
+    }
+}
+
+/// Should `next` (older) join the session that currently ends with `prev` (newer)?
+fn history_should_group(prev: &HistoryRow, next: &HistoryRow) -> bool {
+    if prev.media_id != next.media_id || prev.is_legacy != next.is_legacy {
+        return false;
+    }
+    let same_session = matches!((&prev.session_id, &next.session_id), (Some(a), Some(b)) if a == b);
+    if prev.is_legacy {
+        // Backdated imports are spread out on purpose; only an explicit shared
+        // session id groups them.
+        return same_session;
+    }
+    same_session || (prev.timestamp - next.timestamp).abs() < HISTORY_SESSION_GAP_SECS
+}
+
+/// Converts a UTC epoch to the OS-local calendar date key and clock time.
+fn history_localize(ts: i64, tz: Option<chrono_tz::Tz>) -> (String, String, bool) {
+    let utc = chrono::Utc
+        .timestamp_opt(ts, 0)
+        .single()
+        .unwrap_or_else(|| chrono::Utc.timestamp_opt(0, 0).unwrap());
+    let (naive, is_utc) = match tz {
+        Some(tz) => (utc.with_timezone(&tz).naive_local(), false),
+        None => (utc.naive_utc(), true),
+    };
+    (
+        naive.format("%Y-%m-%d").to_string(),
+        naive.format("%-I:%M %p").to_string(),
+        is_utc,
+    )
+}
+
+struct HistoryImageConfig {
+    poster_size: String,
+    high_performance_mode: bool,
+}
+
+fn history_entry_json(
+    row: &HistoryRow,
+    hist_ids: &[i64],
+    play_count: usize,
+    tz: Option<chrono_tz::Tz>,
+    images: &HistoryImageConfig,
+) -> Value {
+    let (sanitized_air_date, is_exact, is_known) = crate::sanitizer::sanitize_date(&row.raw_air_date);
+    let time_capsule = if is_known {
+        calculate_gap(&sanitized_air_date, row.timestamp)
+    } else {
+        None
+    };
+    let (date_key, formatted_time, is_utc_fallback) = history_localize(row.timestamp, tz);
+
+    let still_path = if row.raw_still_path.is_empty() {
+        String::new()
+    } else {
+        crate::tmdb::resolve_local_still_path(&row.raw_still_path, row.episode_id as i32)
+            .unwrap_or_else(|| row.raw_still_path.clone())
+    };
+
+    let state = row.watch_state();
+    let progress_percent = match state {
+        "partial" => (row.completion_ratio * 100.0).round() as i64,
+        _ => 100,
+    };
+
+    json!({
+        "hist_id": row.hist_id,
+        "hist_ids": hist_ids,
+        "play_count": play_count,
+        "timestamp": row.timestamp,
+        "date_key": date_key,
+        "formatted_time": formatted_time,
+        "is_utc_fallback": is_utc_fallback,
+        "is_legacy": row.is_legacy,
+        "watch_state": state,
+        "progress_percent": progress_percent,
+        "pause_count": row.pause_count,
+        "resume_position": row.resume_position,
+        "episode_id": row.episode_id,
+        "season_num": row.season_num,
+        "ep_num": row.ep_num,
+        "ep_title": row.ep_title,
+        "still_path": still_path,
+        "air_date": sanitized_air_date,
+        "is_date_known": is_known,
+        "is_exact_date": is_exact,
+        "time_capsule": time_capsule,
+        "runtime": row.runtime,
+        "media_id": row.media_id,
+        "show_title": row.show_title,
+        "media_type": row.media_type,
+        "file_path": row.file_path,
+        "poster_path": crate::tmdb::resolve_local_poster_path(&row.raw_poster_path, &images.poster_size, images.high_performance_mode)
+            .unwrap_or_else(|| row.raw_poster_path.clone()),
+        "backdrop_path": crate::tmdb::resolve_local_backdrop_path(&row.raw_backdrop_path, "w1280", images.high_performance_mode)
+            .unwrap_or_else(|| row.raw_backdrop_path.clone()),
+    })
+}
+
+/// Collapses a session (newest first) into one card. Repeat plays of the same
+/// episode are merged into a single entry that keeps every underlying history id.
+fn history_block_json(
+    block: &[HistoryRow],
+    tz: Option<chrono_tz::Tz>,
+    images: &HistoryImageConfig,
+) -> Value {
+    let mut order: Vec<i64> = Vec::new();
+    let mut by_episode: HashMap<i64, (usize, Vec<i64>)> = HashMap::new();
+    for (idx, row) in block.iter().enumerate() {
+        match by_episode.get_mut(&row.episode_id) {
+            Some((_, ids)) => ids.push(row.hist_id),
+            None => {
+                order.push(row.episode_id);
+                by_episode.insert(row.episode_id, (idx, vec![row.hist_id]));
+            }
+        }
+    }
+
+    let mut entries = Vec::with_capacity(order.len());
+    let mut watched_minutes = 0i64;
+    for episode_id in &order {
+        let (idx, ids) = &by_episode[episode_id];
+        let row = &block[*idx];
+        watched_minutes += row.watched_minutes();
+        entries.push(history_entry_json(row, ids, ids.len(), tz, images));
+    }
+
+    let newest = &block[0];
+    let oldest = &block[block.len() - 1];
+    let all_ids: Vec<i64> = block.iter().map(|r| r.hist_id).collect();
+
+    json!({
+        "id": format!("h{}", newest.hist_id),
+        "kind": if entries.len() > 1 { "session" } else { "single" },
+        "media_id": newest.media_id,
+        "media_type": newest.media_type,
+        "show_title": newest.show_title,
+        "is_legacy": newest.is_legacy,
+        "date_key": entries[0]["date_key"],
+        "start_ts": oldest.timestamp,
+        "end_ts": newest.timestamp,
+        "watched_minutes": watched_minutes,
+        "episode_count": entries.len(),
+        "hist_ids": all_ids,
+        "entries": entries,
+    })
+}
+
+#[tauri::command]
+#[tracing::instrument(level = "debug", skip(app, state))]
+pub async fn fetch_history(
+    request_id: String,
+    cursor: Option<HistoryCursor>,
+    page_size: Option<u32>,
+    media_type: Option<String>,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<Value, AppError> {
+    let media_type_filter = match media_type.as_deref().map(str::trim) {
+        None | Some("") | Some("All") => None,
+        Some("TV") => Some("TV".to_string()),
+        Some("Movie") | Some("Movies") => Some("Movie".to_string()),
+        Some(other) => {
+            return Err(AppError::Custom(format!(
+                "Invalid history filter '{}'. Expected All, TV or Movie.",
+                other
+            )))
+        }
+    };
+    let limit = page_size
+        .unwrap_or(HISTORY_DEFAULT_PAGE_SIZE)
+        .clamp(1, HISTORY_MAX_PAGE_SIZE);
+
+    let _permit = state
+        .read_semaphore
+        .acquire()
+        .await
+        .map_err(|_| AppError::Custom("History reader is shutting down".to_string()))?;
+
+    let token = CancellationToken::new();
+    if let Ok(mut tokens) = state.cancel_tokens.write() {
+        tokens.insert(request_id.clone(), token.clone());
+    }
+    let cancel_tokens = state.cancel_tokens.clone();
+
+    let high_performance_mode = state
+        .settings
+        .read()
+        .map(|s| s.high_performance_mode)
+        .unwrap_or(false);
+    let poster_size = match app.primary_monitor() {
+        Ok(Some(monitor)) if monitor.scale_factor() > 1.0 => "original",
+        _ => "w500",
+    }
+    .to_string();
+    let images = HistoryImageConfig {
+        poster_size,
+        high_performance_mode,
+    };
 
     let result = tokio::task::spawn_blocking(move || {
         handle_panic(std::panic::AssertUnwindSafe(|| {
             let conn = crate::db::get_readonly_connection()?;
-            let limit = page_size.unwrap_or(100);
-            let offset = page.unwrap_or(0) * limit;
+            let tz: Option<chrono_tz::Tz> = iana_time_zone::get_timezone()
+                .ok()
+                .and_then(|name| name.parse().ok());
 
-            let os_tz_name = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string());
-            let tz: Option<chrono_tz::Tz> = os_tz_name.parse().ok();
-            let _is_utc_fallback = tz.is_none();
-
-            let mut stmt = conn.prepare(
-                "
-                SELECT h.id as hist_id, h.timestamp, h.session_id, h.is_legacy, h.start_time, h.end_time, h.pause_count, h.completion_ratio,
-                       e.id as episode_id, e.season_num, e.ep_num, e.title as ep_title, e.still_path, e.air_date, e.runtime, e.last_position, e.is_exact_date,
-                       m.id as media_id, m.title as show_title, m.poster_path, m.backdrop_path, m.type as media_type,
-                       lf.file_path
-                FROM History h
-                JOIN Episodes e ON h.episode_id = e.id
-                JOIN Media m ON e.media_id = m.id
-                LEFT JOIN Local_Files lf ON e.id = lf.episode_id
-                ORDER BY h.timestamp DESC, h.id DESC
-                LIMIT ? OFFSET ?
-                "
+            let fetch_cap = limit + HISTORY_MAX_BLOCK_EXTENSION;
+            let mut stmt = conn.prepare_cached(
+                "SELECT h.id, h.timestamp, h.session_id, h.is_legacy, h.start_time, h.pause_count, h.completion_ratio,
+                        e.id, e.season_num, e.ep_num, e.title, e.still_path, e.air_date, e.runtime, e.last_position,
+                        m.id, m.title, m.poster_path, m.backdrop_path, m.type,
+                        (SELECT lf.file_path FROM Local_Files lf WHERE lf.episode_id = e.id LIMIT 1)
+                 FROM History h
+                 JOIN Episodes e ON h.episode_id = e.id
+                 JOIN Media m ON e.media_id = m.id
+                 WHERE (?1 IS NULL OR h.timestamp < ?1 OR (h.timestamp = ?1 AND h.id < ?2))
+                   AND (?3 IS NULL OR m.type = ?3)
+                 ORDER BY h.timestamp DESC, h.id DESC
+                 LIMIT ?4",
             )?;
 
-            let mut history = Vec::new();
-            let mut rows = stmt.query(params![limit, offset])?;
+            let mut rows = stmt.query(params![
+                cursor.map(|c| c.timestamp),
+                cursor.map(|c| c.id).unwrap_or(i64::MAX),
+                media_type_filter,
+                fetch_cap + 1,
+            ])?;
 
-            let mut batch_count = 0;
-            while let Ok(Some(row)) = rows.next() {
-                if batch_count % 50 == 0 {
-                    if token.is_cancelled() {
-                        return Err(AppError::Custom("Task cancelled".to_string()));
-                    }
+            let mut groups: Vec<Value> = Vec::new();
+            let mut block: Vec<HistoryRow> = Vec::new();
+            let mut consumed: u32 = 0;
+            let mut last_cursor: Option<HistoryCursor> = None;
+            let mut has_more = false;
+
+            while let Some(raw) = rows.next()? {
+                if consumed % 50 == 0 && token.is_cancelled() {
+                    return Err(AppError::Custom("Task cancelled".to_string()));
                 }
-                batch_count += 1;
 
-                let session_id: Option<String> = row.get(2)?;
-                let ts: i64 = row.get(1)?;
-                let runtime: i32 = row.get(14)?;
-                let raw_air_date: String = row.get::<_, Option<String>>(13)?.unwrap_or_default();
-                let (sanitized_air_date, is_exact, is_known) = crate::sanitizer::sanitize_date(&raw_air_date);
-                let time_capsule = calculate_gap(&sanitized_air_date, ts);
-
-                let ep_id = row.get::<_, i32>(8)?;
-                let raw_still_path = row.get::<_, Option<String>>(12)?.unwrap_or_default();
-                let is_fallback_image = raw_still_path.is_empty();
-                let resolved_still_path = if !is_fallback_image {
-                    crate::tmdb::resolve_local_still_path(&raw_still_path, ep_id).unwrap_or(raw_still_path)
-                } else {
-                    String::new()
-                };
-
-                let potential_spoiler = if is_known && !sanitized_air_date.is_empty() {
-                    let now = chrono::Utc::now().naive_utc().date();
-                    if let Ok(parsed) = chrono::NaiveDate::parse_from_str(&sanitized_air_date, "%Y-%m-%d") {
-                        // within last 48 hours or future
-                        let duration = now.signed_duration_since(parsed);
-                        duration.num_days() <= 2
-                    } else {
-                        false
+                let row = match HistoryRow::from_row(raw) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        // One malformed row must never take down the whole timeline.
+                        tracing::warn!("[HISTORY] ⚠️ Skipping unreadable history row: {}", e);
+                        continue;
                     }
-                } else {
-                    false
                 };
 
-                let last_position = row.get::<_, Option<i32>>(15)?.unwrap_or(0);
-                let progress_percentage = crate::sanitizer::calculate_progress_percentage(last_position, runtime);
+                let joins_block = block
+                    .last()
+                    .map_or(false, |prev| history_should_group(prev, &row));
 
-                let is_legacy = row.get::<_, i32>(3)? == 1;
-
-                let (formatted_date, formatted_time, is_utc) = if is_legacy {
-                    ("Unknown".to_string(), "Unknown Time".to_string(), false)
-                } else {
-                    let (dt, is_utc) = if let Some(tz_parsed) = tz {
-                        if let Some(utc_dt) = chrono::Utc.timestamp_opt(ts, 0).single() {
-                            (utc_dt.with_timezone(&tz_parsed).naive_local(), false)
-                        } else {
-                            (chrono::Utc.timestamp_opt(ts, 0).single().unwrap().naive_utc(), true)
-                        }
-                    } else {
-                        (chrono::Utc.timestamp_opt(ts, 0).single().unwrap().naive_utc(), true)
-                    };
-                    (dt.format("%Y-%m-%d").to_string(), dt.format("%-I:%M %p").to_string(), is_utc)
-                };
-
-                history.push(json!({
-                    "hist_id": row.get::<_, i32>(0)?,
-                    "timestamp": ts,
-                    "formatted_date": formatted_date,
-                    "formatted_time": formatted_time,
-                    "is_utc_fallback": is_utc,
-                    "session_id": session_id,
-                    "is_legacy": is_legacy,
-                    "start_time": row.get::<_, Option<String>>(4)?.unwrap_or_default(),
-                    "end_time": row.get::<_, Option<String>>(5)?.unwrap_or_default(),
-                    "pause_count": row.get::<_, i32>(6)?,
-                    "completion_ratio": row.get::<_, f64>(7)?,
-                    "last_position": last_position,
-                    "episode_id": ep_id,
-                    "season_num": row.get::<_, u32>(9)?,
-                    "ep_num": row.get::<_, u32>(10)?,
-                    "ep_title": row.get::<_, Option<String>>(11)?.unwrap_or_default(),
-                    "still_path": resolved_still_path,
-                    "air_date": sanitized_air_date,
-                    "is_date_known": is_known,
-                    "is_exact_date": is_exact,
-                    "time_capsule": time_capsule,
-                    "runtime": runtime,
-                    "progress_percentage": progress_percentage,
-                    "media_id": row.get::<_, i32>(17)?,
-                    "show_title": row.get::<_, Option<String>>(18)?.unwrap_or_default(),
-                    "poster_path": (|| {
-                        let raw = row.get::<_, Option<String>>(19).unwrap_or_default().unwrap_or_default();
-                        crate::tmdb::resolve_local_poster_path(&raw, &poster_size, high_performance_mode).unwrap_or(raw)
-                    })(),
-                    "backdrop_path": (|| {
-                        let raw = row.get::<_, Option<String>>(20).unwrap_or_default().unwrap_or_default();
-                        crate::tmdb::resolve_local_backdrop_path(&raw, "w1280", high_performance_mode).unwrap_or(raw)
-                    })(),
-                    "media_type": row.get::<_, Option<String>>(21)?.unwrap_or_default(),
-                    "file_path": row.get::<_, Option<String>>(22).unwrap_or_default(),
-                    "is_fallback_image": is_fallback_image,
-                    "potential_spoiler": potential_spoiler,
-                }));
-            }
-
-            // Group entries into Binge-Blocks
-            let mut grouped_history = Vec::new();
-            let mut current_block: Vec<Value> = Vec::new();
-
-            for entry in history {
-                if current_block.is_empty() {
-                    current_block.push(entry);
-                } else {
-                    let last_entry = current_block.last().unwrap();
-                    let is_same_session = entry["session_id"].as_str().is_some() && last_entry["session_id"].as_str() == entry["session_id"].as_str();
-                    let time_diff = (last_entry["timestamp"].as_i64().unwrap_or(0) - entry["timestamp"].as_i64().unwrap_or(0)).abs();
-                    let is_within_6_hours = time_diff < 21600; // 6 hours
-                    let is_same_show = last_entry["media_id"] == entry["media_id"];
-                    let is_legacy = entry["is_legacy"].as_i64().unwrap_or(0) == 1;
-                    let last_is_legacy = last_entry["is_legacy"].as_i64().unwrap_or(0) == 1;
-
-                    // If both are legacy, ONLY group if they share a session ID exactly (bypass dynamic time check).
-                    // If neither are legacy, group by same session OR (time < 6h AND same show).
-                    let should_group = if is_legacy && last_is_legacy {
-                        is_same_session
-                    } else if !is_legacy && !last_is_legacy {
-                        is_same_session || (is_within_6_hours && is_same_show)
-                    } else {
-                        false // Cannot group legacy with non-legacy
-                    };
-
-                    if should_group {
-                        current_block.push(entry);
-                    } else {
-                        grouped_history.push(json!({
-                            "ui_type": if current_block.len() > 1 { "BINGE" } else { "SINGLE" },
-                            "main_entry": current_block[0].clone(), // Most recent in the block
-                            "entries": current_block.clone(),
-                            "total_runtime": current_block.iter().map(|e| e["runtime"].as_i64().unwrap_or(0)).sum::<i64>(),
-                            "episode_count": current_block.len(),
-                        }));
-                        current_block = vec![entry];
-                    }
+                if consumed >= fetch_cap || (consumed >= limit && !joins_block) {
+                    has_more = true;
+                    break;
                 }
+
+                if !joins_block && !block.is_empty() {
+                    groups.push(history_block_json(&block, tz, &images));
+                    block.clear();
+                }
+
+                last_cursor = Some(HistoryCursor {
+                    timestamp: row.timestamp,
+                    id: row.hist_id,
+                });
+                block.push(row);
+                consumed += 1;
             }
 
-            if !current_block.is_empty() {
-                grouped_history.push(json!({
-                    "ui_type": if current_block.len() > 1 { "BINGE" } else { "SINGLE" },
-                    "main_entry": current_block[0].clone(),
-                    "entries": current_block.clone(),
-                    "total_runtime": current_block.iter().map(|e| e["runtime"].as_i64().unwrap_or(0)).sum::<i64>(),
-                    "episode_count": current_block.len(),
-                }));
+            if !block.is_empty() {
+                groups.push(history_block_json(&block, tz, &images));
             }
 
-            Ok(grouped_history)
+            Ok(json!({
+                "groups": groups,
+                "next_cursor": if has_more { last_cursor } else { None },
+                "has_more": has_more,
+            }))
         }))
-    }).await.unwrap_or(Err(AppError::Custom("Task panicked".to_string())));
+    })
+    .await
+    .unwrap_or_else(|_| Err(AppError::Custom("History task panicked".to_string())));
 
-    {
-        let mut tokens = cancel_tokens.write().unwrap();
+    if let Ok(mut tokens) = cancel_tokens.write() {
         tokens.remove(&request_id);
     }
 
     result
+}
+
+async fn run_history_delete(
+    app: &tauri::AppHandle,
+    state: &tauri::State<'_, AppState>,
+    history_ids: Option<Vec<i64>>,
+) -> Result<usize, AppError> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<usize, AppError>>();
+
+    state.db_queue.push_high_priority(move |conn| {
+        let result = (|| -> Result<usize, AppError> {
+            let tx_db = conn.transaction()?;
+            let removed = match &history_ids {
+                Some(ids) => {
+                    let mut removed = 0usize;
+                    {
+                        let mut stmt = tx_db.prepare_cached("DELETE FROM History WHERE id = ?")?;
+                        for id in ids {
+                            removed += stmt.execute(params![id])?;
+                        }
+                    }
+                    removed
+                }
+                None => tx_db.execute("DELETE FROM History", [])?,
+            };
+            tx_db.commit()?;
+            Ok(removed)
+        })();
+        let _ = tx.send(result);
+    });
+
+    let removed = match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+        Ok(Ok(result)) => result?,
+        Ok(Err(_)) => return Err(AppError::Custom("Database worker dropped task".to_string())),
+        Err(_) => return Err(AppError::Custom("Task Timed Out".to_string())),
+    };
+
+    if let Ok(mut cache) = state.stats_cache.write() {
+        *cache = None;
+    }
+    let _ = app.emit("history-changed", json!({ "removed": removed }));
+    Ok(removed)
+}
+
+/// Removes specific plays from the watch history. Episode watched status and
+/// resume positions are left untouched.
+#[tauri::command]
+#[tracing::instrument(level = "debug", skip(app, state))]
+pub async fn delete_history_entries(
+    history_ids: Vec<i64>,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<usize, AppError> {
+    let mut ids: Vec<i64> = history_ids.into_iter().filter(|id| *id > 0).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    if ids.len() > HISTORY_MAX_DELETE_BATCH {
+        return Err(AppError::Custom(format!(
+            "Too many history entries in one request ({}). The limit is {}.",
+            ids.len(),
+            HISTORY_MAX_DELETE_BATCH
+        )));
+    }
+    let removed = run_history_delete(&app, &state, Some(ids)).await?;
+    tracing::info!("[HISTORY] 🗑️ Removed {} history entries", removed);
+    Ok(removed)
+}
+
+/// Clears the entire watch history. Episode watched status is left untouched.
+#[tauri::command]
+#[tracing::instrument(level = "debug", skip(app, state))]
+pub async fn clear_history(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<usize, AppError> {
+    let removed = run_history_delete(&app, &state, None).await?;
+    tracing::info!("[HISTORY] 🧹 Cleared watch history ({} entries)", removed);
+    Ok(removed)
 }
 
 #[tauri::command]

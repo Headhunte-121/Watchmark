@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+* **Remove from History**: Remove a single play or a whole binge session from your watch history, with a 5-second **Undo**. Watched status and resume points are not affected.
+* **Clear History**: Clear your entire watch history after a confirmation prompt.
+* **History Filters**: Filter the timeline by All, TV Shows or Movies.
+* **New Activity Prompt**: If you watch something while scrolled down in History, a "New activity" pill lets you jump to the latest entries instead of losing your place.
+
+### Changed
+* **Watch History Redesign**: The timeline is now a single-column list grouped by day, with daily totals, 16:9 thumbnails, clear Watched / Marked as watched / Archived / in-progress states, and a play count for repeat plays.
+* Older dates in History now include the year.
+
+### Fixed
+* History stopped loading older entries after the first page; the full history now loads as you scroll.
+* Binge sessions no longer split in two at page boundaries.
+* The **Archived** badge never appeared, and archived entries could be wrongly grouped with each other.
+* A single entry with missing data (such as an unknown runtime) could stop the whole History tab from loading.
+* History now refreshes after you finish watching in VLC or delete a show, and shows a clear error with **Try again** instead of an empty page if loading fails.
+
 ## [1.2.0] - 2026-09-26
 
 ### Added
