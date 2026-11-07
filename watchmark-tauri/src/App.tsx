@@ -11,6 +11,7 @@ import { toast } from "./utils/toast";
 import Library from "./components/Library";
 import SearchTMDB from "./components/SearchTMDB";
 import History from "./components/History";
+import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 import InboxView from "./components/InboxView";
 import SettingsView from "./components/SettingsView";
 import MediaDetails from "./components/MediaDetails";
@@ -27,6 +28,16 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export type View = "dashboard" | "tv" | "movies" | "search" | "inbox" | "history" | "settings";
+
+const VIEW_LABELS: Record<string, string> = {
+  dashboard: "dashboard",
+  tv: "TV library",
+  movies: "movie library",
+  search: "search page",
+  inbox: "inbox",
+  history: "watch history",
+  settings: "settings page",
+};
 
 function App() {
   const [currentView, setCurrentView] = useState<View>("dashboard");
@@ -646,12 +657,14 @@ function App() {
                 className="h-full w-full pt-16 bg-cinema-black"
                 style={{ position: "absolute", zIndex: 20 }}
               >
-                <MediaDetails
-                  mediaId={selectedMediaId}
-                  initialSeasonNum={selectedSeasonNum}
-                  onBack={() => handleNav(currentView)}
-                  refreshTrigger={refreshTrigger}
-                />
+                <ErrorBoundary scope="show page">
+                  <MediaDetails
+                    mediaId={selectedMediaId}
+                    initialSeasonNum={selectedSeasonNum}
+                    onBack={() => handleNav(currentView)}
+                    refreshTrigger={refreshTrigger}
+                  />
+                </ErrorBoundary>
               </motion.div>
             ) : (
               <motion.div
@@ -662,13 +675,15 @@ function App() {
                 transition={{ duration: 0.3 }}
                 className="h-full w-full pt-16 md:pt-0"
               >
-                {currentView === "dashboard" && <Dashboard onMediaSelect={(id: number) => handleNav("dashboard", id)} refreshTrigger={refreshTrigger} searchQuery={globalSearchQuery} />}
-                {currentView === "tv" && <Library type="TV" onMediaSelect={(id: number) => handleNav("tv", id)} refreshTrigger={refreshTrigger} searchQuery={globalSearchQuery} />}
-                {currentView === "movies" && <Library type="Movie" onMediaSelect={(id: number) => handleNav("movies", id)} refreshTrigger={refreshTrigger} searchQuery={globalSearchQuery} />}
-                {currentView === "search" && <SearchTMDB initialQuery={globalSearchQuery} onMediaSelect={(id: number) => handleNav("search", id)} />}
-                {currentView === "inbox" && <InboxView onMatch={() => setRefreshTrigger(prev => prev + 1)} />}
-                {currentView === "history" && <History onNavigateToMedia={(id: number, seasonNum?: number) => handleNav("history", id, seasonNum)} />}
-                {currentView === "settings" && <SettingsView setIsDirty={setIsSettingsDirty} setSaveCallback={setSaveSettingsCallback} />}
+                <ErrorBoundary scope={VIEW_LABELS[currentView] ?? "page"}>
+                  {currentView === "dashboard" && <Dashboard onMediaSelect={(id: number) => handleNav("dashboard", id)} refreshTrigger={refreshTrigger} searchQuery={globalSearchQuery} />}
+                  {currentView === "tv" && <Library type="TV" onMediaSelect={(id: number) => handleNav("tv", id)} refreshTrigger={refreshTrigger} searchQuery={globalSearchQuery} />}
+                  {currentView === "movies" && <Library type="Movie" onMediaSelect={(id: number) => handleNav("movies", id)} refreshTrigger={refreshTrigger} searchQuery={globalSearchQuery} />}
+                  {currentView === "search" && <SearchTMDB initialQuery={globalSearchQuery} onMediaSelect={(id: number) => handleNav("search", id)} />}
+                  {currentView === "inbox" && <InboxView onMatch={() => setRefreshTrigger(prev => prev + 1)} />}
+                  {currentView === "history" && <History onNavigateToMedia={(id: number, seasonNum?: number) => handleNav("history", id, seasonNum)} />}
+                  {currentView === "settings" && <SettingsView setIsDirty={setIsSettingsDirty} setSaveCallback={setSaveSettingsCallback} />}
+                </ErrorBoundary>
               </motion.div>
             )}
           </AnimatePresence>
