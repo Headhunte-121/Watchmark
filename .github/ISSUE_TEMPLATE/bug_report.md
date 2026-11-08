@@ -23,7 +23,7 @@ A clear and concise description of what you expected to happen.
 If applicable, attach screenshots or check `%LOCALAPPDATA%\WatchMark\watchmark.log` for relevant error traces.
 
 **Desktop Environment:**
- - OS: [e.g. Windows 11, macOS Sequoia, Ubuntu 24.04]
+ - OS: [e.g. Windows 11 24H2]
  - WatchMark Version: [e.g. 1.2.0]
  - VLC Version: [e.g. 3.0.21]
 

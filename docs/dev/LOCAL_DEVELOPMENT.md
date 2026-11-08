@@ -1,130 +1,93 @@
-# Local Development Guide
+# Local development
 
-This guide walks you through setting up, running, debugging, and compiling **WatchMark Media Tracker** from source code.
+How to build, run, debug and release WatchMark from source. Development and testing have only been done on Windows 10/11.
 
----
+## Prerequisites
 
-## 🛠️ Prerequisites
+| Tool | Version | Notes |
+| :--- | :--- | :--- |
+| Node.js | 20 or later | CI uses Node 20. |
+| Rust | Current stable | Install with [rustup](https://rustup.rs/). |
+| Microsoft C++ Build Tools | | Required by Tauri on Windows (the "Desktop development with C++" workload). |
+| WebView2 Runtime | | Preinstalled on Windows 11. |
+| VLC Media Player | 3.x | Needed to test playback tracking. |
+| TMDB API key | v3 key | Free from your [TMDB account settings](https://www.themoviedb.org/settings/api). |
 
-Before you begin, ensure you have the following installed on your machine:
-
-1. **Node.js**: `v18.0.0` or higher (Recommended: Node 20 LTS) — [nodejs.org](https://nodejs.org/)
-2. **Rust Toolchain**: Latest stable Rust compiler and Cargo — [rustup.rs](https://rustup.rs/)
-   ```bash
-   rustc --version
-   cargo --version
-   ```
-3. **VLC Media Player**: Installed in its default directory (or custom path) — [videolan.org/vlc](https://www.videolan.org/vlc/)
-4. **Microsoft C++ Build Tools** (Windows only): Ensure the "Desktop development with C++" workload is installed via Visual Studio Installer.
-5. **TMDB API Key**: Free account required from [The Movie Database](https://www.themoviedb.org/documentation/api).
-
----
-
-## 🚀 Setting Up the Repository
+## Run the app
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/Headhunte-121/timestampet.git
-cd timestampet
-
-# 2. Enter the Tauri workspace
-cd watchmark-tauri
-
-# 3. Install frontend dependencies
+git clone https://github.com/Headhunte-121/Watchmark.git
+cd Watchmark/watchmark-tauri
 npm install
-```
-
----
-
-## 💻 Running the Development Environment
-
-Start the development environment with live Hot Module Replacement (HMR) for React and incremental compilation for Rust:
-
-```bash
-cd watchmark-tauri
 npm run tauri dev
 ```
 
-This command will:
-1. Start the Vite frontend server on `http://127.0.0.1:1420`.
-2. Compile the Rust backend using `cargo`.
-3. Launch the native desktop window connecting to the Vite dev server with DevTools enabled.
+This starts the Vite dev server on `http://127.0.0.1:1420` and opens the app window. Frontend changes reload instantly; Rust changes trigger a rebuild and restart of the window.
 
----
+**TMDB key for development.** If the `TMDB_API_KEY` environment variable is set, WatchMark uses it instead of the key saved in Settings, and won't save it anywhere. That's handy for test machines and CI.
 
-## 🔍 Debugging & Inspection
+## Where things live
 
-### 1. Inspecting Application Logs
-WatchMark writes structured, multi-level diagnostic logs using `tracing`:
-* **Windows**: `%LOCALAPPDATA%\WatchMark\watchmark.log`
-* **macOS**: `~/Library/Application Support/com.WatchMark.WatchMark/watchmark.log`
-* **Linux**: `~/.local/share/WatchMark/watchmark.log`
+All app data is under `%LOCALAPPDATA%\WatchMark\WatchMark\data\`:
 
-You can monitor logs live in PowerShell:
+| Path | Contents |
+| :--- | :--- |
+| `db\watchmark.db` | The SQLite database (plus `-wal` and `-shm` files while the app runs) |
+| `backups\` | Automatic backups (`.bak`) and their `.sha256` checksum files |
+| `cache\posters`, `cache\backdrops`, `cache\stills` | Downloaded artwork |
+| `fonts\` | The Inter font, downloaded on first launch |
+| `settings.json` | Settings (the TMDB key is kept in Windows Credential Manager instead, under `WatchMark`) |
+| `WatchMark.log` | The log file |
+
+To start from a clean slate, close the app and rename the `data` folder. WatchMark recreates it on the next launch.
+
+## Debugging
+
+**Logs.** Backend and frontend messages both go to `WatchMark.log`; frontend logs are forwarded through a `frontend_log` command. Follow it live:
+
 ```powershell
-Get-Content -Path "$env:LOCALAPPDATA\WatchMark\watchmark.log" -Wait -Tail 50
+Get-Content "$env:LOCALAPPDATA\WatchMark\WatchMark\data\WatchMark.log" -Wait -Tail 50
 ```
 
-### 2. Inspecting the SQLite Database
-The database file is located at:
-`%LOCALAPPDATA%\WatchMark\watchmark.db`
+Log levels can be changed without restarting: the overall level in **Settings → System**, and per backend module (for example `debug` for `vlc` only) in **Settings → Advanced**.
 
-You can inspect the database directly using any SQLite viewer (e.g. [DB Browser for SQLite](https://sqlitebrowser.org/)) or the SQLite CLI:
-```bash
-sqlite3 "%LOCALAPPDATA%\WatchMark\watchmark.db"
-```
-Helpful diagnostic queries:
-```sql
--- Check total tracked media
-SELECT id, title, type, user_rating, total_episodes, completed_eps FROM Media;
+**DevTools.** In development builds, right-click in the window and choose **Inspect**, or press `Ctrl+Shift+I`, to open the WebView DevTools. Rendering errors also appear there.
 
--- Check latest watch history
-SELECT id, episode_id, session_id, duration, completion_ratio FROM History ORDER BY id DESC LIMIT 10;
-
--- Check unmatched triage files
-SELECT id, file_path, parsed_series FROM Unmatched_Files;
-```
-
-### 3. Frontend Webview DevTools
-To inspect the React DOM and console in development mode, right-click anywhere within the WatchMark window and select **Inspect Element** (or press `F12` / `Ctrl + Shift + I`).
-
----
-
-## 🧪 Verification & Typechecking
-
-Always verify your changes before submitting code:
+**Database.** You can inspect the database with the `sqlite3` CLI or a tool like DB Browser for SQLite. Open it read-only while the app is running, or work on a copy:
 
 ```bash
-# 1. Check Rust compilation and type-safety
-cd watchmark-tauri/src-tauri
-cargo check
-
-# 2. Run unit and integration tests
-cargo test
-
-# 3. Typecheck React/TypeScript frontend
-cd ..
-npx tsc --noEmit
-
-# 4. Verify static production bundle
-npm run build
+sqlite3 -readonly "%LOCALAPPDATA%\WatchMark\WatchMark\data\db\watchmark.db"
 ```
 
----
+See [Database schema](../architecture/DATABASE_SCHEMA.md) for the tables.
 
-## 📦 Packaging Standalone Release Executables
+## Checks before committing
 
-To build an optimized, standalone release executable with embedded webview assets:
+From `watchmark-tauri/`:
 
 ```bash
-cd watchmark-tauri
-npm run tauri build
+npm run build                 # TypeScript type check + production frontend build
+cd src-tauri && cargo check   # Rust compile check
+cd src-tauri && cargo test    # Rust unit tests
 ```
 
-### Build Outputs:
-* **Standalone Portable Executable**:
-  `watchmark-tauri/src-tauri/target/release/watchmark-tauri.exe`
-* **NSIS Windows Installer**:
-  `watchmark-tauri/src-tauri/target/release/bundle/nsis/WatchMark_1.2.0_x64-setup.exe`
+CI on GitHub Actions runs `npm run build` and `cargo check` on Windows for pushes to `main` and `Tauri` and for pull requests into them. It does not run `cargo test`.
 
-The release binary embeds all React, CSS, and SQLite logic directly into the `.exe`. It requires zero external dependencies (no Node, no npm, no Vite) and runs on any standard Windows 10/11 machine.
+## Making a release
+
+1. Update the version in all five places: `package.json`, `package-lock.json` (the two root entries), `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.lock` (updated automatically by `cargo check`).
+2. Add a section for the version to `CHANGELOG.md`. Keep it user-facing.
+3. Build:
+
+   ```bash
+   npm run tauri build
+   ```
+
+   Outputs in `src-tauri/target/release/`:
+   - `watchmark-tauri.exe`: the standalone executable
+   - `bundle/nsis/WatchMark Media Tracker_<version>_x64-setup.exe`: the installer
+   - `bundle/msi/WatchMark Media Tracker_<version>_x64_en-US.msi`: the MSI package
+4. Tag the release commit (`git tag -a vX.Y.Z`) and push the tag.
+5. Create a GitHub Release from the tag. Upload the installer, MSI and executable (renamed without spaces, for example `WatchMark_<version>_x64-setup.exe` and `WatchMark.exe`) and a `SHA256SUMS.txt` with their checksums.
+
+Built binaries are never committed to the repository; they're only published as release assets.

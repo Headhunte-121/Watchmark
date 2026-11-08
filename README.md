@@ -1,270 +1,204 @@
-# WatchMark Media Tracker
+# WatchMark
 
 <div align="center">
 
+[![Release](https://img.shields.io/github/v/release/Headhunte-121/Watchmark?label=release)](https://github.com/Headhunte-121/Watchmark/releases/latest)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-24C8D5?logo=tauri&logoColor=white)](https://tauri.app/)
-[![Rust](https://img.shields.io/badge/Rust-2021_Edition-CE412B?logo=rust&logoColor=white)](https://www.rust-lang.org/)
-[![React](https://img.shields.io/badge/React-19.1-61DAFB?logo=react&logoColor=black)](https://react.dev/)
+[![Rust](https://img.shields.io/badge/Rust-2021-CE412B?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Tailwind CSS](https://img.shields.io/badge/Tailwind-3.4-38B2AC?logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
-[![SQLite](https://img.shields.io/badge/SQLite-WAL_Mode-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
-[![VLC](https://img.shields.io/badge/VLC-Telemetry_Sync-FF6B00?logo=vlc-media-player&logoColor=white)](https://www.videolan.org/)
+[![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**A fast, lightweight, local-first desktop media diary and VLC companion for Windows.**
+**A local-first desktop watch tracker for people who play their own video files in VLC.**
 
-*Tracks your viewing progress in VLC in real time, fetches episode metadata and posters from TMDb, organizes your local library, and saves your watch diary into an SQLite database — with zero 24/7 background servers, 15.1 MB idle RAM, and 0.0% background CPU.*
-
-[What is WatchMark?](#-what-is-watchmark) • [Core Features](#-application-features) • [Architecture](#-architecture--tech-stack) • [How It Was Built](#-how-watchmark-was-built-ai-assisted-engineering--testing) • [Installation](#️-requirements--installation) • [Documentation](docs/README.md) • [Releases](https://github.com/Headhunte-121/timestampet/releases)
+[Features](#features) • [Getting started](#getting-started) • [Architecture](#architecture) • [How it was built](#how-it-was-built) • [Limitations](#known-limitations) • [Documentation](docs/README.md)
 
 </div>
 
 ---
 
-## 🎯 What is WatchMark?
+## About the project
 
-WatchMark is a client-side personal media tracking app for people who watch local video files (anime, TV shows, movies, university lectures) in **VLC Media Player** and want automatic progress tracking without the battery and memory overhead of running a heavy 24/7 media server like Plex or Jellyfin.
+WatchMark is a student project: a Windows desktop app that keeps a diary of what you watch in **VLC Media Player**. It launches VLC for you, follows playback through VLC's local HTTP interface, remembers where you stopped, and marks episodes as watched when you finish them. Show and movie details come from [The Movie Database (TMDB)](https://www.themoviedb.org/), and everything is stored in a local SQLite database on your machine.
 
-> *"I kept losing my place across anime backlogs and lecture folders without wanting a heavy background media server eating battery and RAM, so I built a zero-daemon local tracker."*
+I built it because I watch a lot of locally stored shows and lectures and kept losing track of where I was. Media servers such as Plex or Jellyfin solve that, but they run as always-on services and are far more than I needed. WatchMark only runs while it's open and needs no server or account.
 
-### Why It's Different
-* **Zero 24/7 Background Servers:** Runs only when you open it. Consumes **15.1 MB idle RAM** and **0.0% background CPU** (and strictly under 50 MB during heavy 1,000+ title library browsing thanks to DOM virtualization).
-* **Automatic VLC Telemetry:** Connects directly to VLC via dynamic loopback HTTP (probing ports `8080..8090`). No browser extensions, no manual logging.
-* **Exact Playhead Resumption:** Remembers your exact second (`--start-time` resumption) and automatically marks episodes as completed when watched past 90% or within 120 seconds of the credits.
-* **Recursive Filesystem Scanner & Triage:** Recursively scans local folders using multi-pattern regex (`S01E01`, `1x01`, `[SubsPlease]`), handles Windows long paths (`\\?\`), and resolves `.lnk` shortcuts into an interactive triage inbox.
-* **TMDb Metadata & Local Caching:** Automatically pulls official episode names, synopses, and posters from TMDb, caching them locally on disk for full offline viewing.
-* **Custom Video Streaming Protocol (`watchmark://`):** Native asynchronous URI protocol supporting HTTP Range headers (`bytes=start-end`) with 1MB chunked buffers for smooth in-app video playback without memory spikes.
-* **Data Durability:** Fully local SQLite database in Write-Ahead Logging (`WAL`) mode with transactional cold-swap restores and automated 3-backup rolling SHA-256 snapshots.
+The project was also a way to learn desktop application engineering end to end: a Rust backend, a React frontend, inter-process communication, a relational schema that evolves over time, and supervising an external process. It was developed between March and November 2026 with AI coding assistants under my direction; [How it was built](#how-it-was-built) explains how that worked and where it went wrong.
 
----
-
-## 🛠️ How WatchMark Was Built: AI-Assisted Engineering & Testing
-
-WatchMark is a **20,740-line desktop codebase** (13,171 lines of Rust across 34 files, 7,569 lines of TypeScript/React across 35 files) built across **522 git commits**. Rather than treating AI as an autocomplete toy or generating monolithic unverified code, development was structured around a human-directed engineering workflow:
-
-1. **Modular Architecture First:** Decomposed the application into decoupled architectural domains (OS shell, async VLC telemetry, SQLite persistence, filesystem ingestion, TMDb synchronization, and virtualized UI) with clear boundaries before writing code.
-2. **Context Window Discipline:** Guided coding agents issue-by-issue against concrete milestones, keeping context clean and avoiding code bloat across weeks of development.
-3. **Scope Auditing & Code Completion Verification:** Reviewed generated diffs to ensure features the AI marked "done" were actually implemented rather than stubbed out with `// TODO` comments or memory-heavy shortcuts (e.g., catching full-file reads in memory instead of true 1MB chunked Range streaming).
-4. **Hands-On QA on Real Hardware:** Tested live desktop builds on physical hardware with Windows Task Manager and DevTools to catch real-world resource leaks that automated tests miss:
-   * **Diagnosed a 70.3% GPU compositor leak** in WebView2 caused by infinite CSS scale transforms under blurred backdrop filters, optimizing it down to **0.0% idle GPU**.
-   * **Caught VLC completion edge-cases** during full playback runs where the playhead reset to 0.0 upon reaching the credits, implementing a &ge;90% completion latch to preserve watch status.
+| | |
+| :--- | :--- |
+| **Status** | Active student project. Latest release: [v1.2.1](https://github.com/Headhunte-121/Watchmark/releases/latest) |
+| **Platform** | Windows 10 / 11 (the only platform tested) |
+| **Size** | About 11,000 lines of Rust, 8,000 lines of TypeScript, 90 Rust unit tests |
+| **License** | MIT |
 
 ---
 
-## 🔬 Practical Case Studies
+## Features
 
-The effectiveness of this development and QA workflow is demonstrated by real engineering challenges resolved during development:
+### Playback tracking with VLC
+- Launches VLC on the episode's file and resumes from the last saved position.
+- Follows playback through VLC's HTTP interface, bound to `127.0.0.1` on the first free port between 8080 and 8090 with a random per-session password.
+- Marks an episode **Completed** once you've watched 90% of it (for clips under five minutes, everything except the last 30 seconds). Otherwise it saves your position so you can resume.
+- Ignores accidental launches: a play shorter than 5% of the episode is discarded rather than recorded.
 
-### Case Study 1: The 70.3% GPU Compositor Bottleneck in WebView2
-* **The Problem:** In Cinema Mode, the idle desktop app consumed **70.3% GPU utilization** in Windows Task Manager, dropping to 0% when animations were turned off.
-* **Diagnosis:** Inspecting the DOM compositor tree revealed an infinite 30-second CSS scale transform (`[1, 1.15, 1]`) in `SafeImage.tsx` running on the 4K backdrop image.
-* **Low-Level Root Cause:** Because this high-resolution image was continuously scaling behind elements styled with CSS `backdrop-filter: blur(...)` and gradient overlays, Chromium's GPU compositor was forced to re-rasterize Gaussian blur convolution passes on every single monitor refresh frame (144Hz).
-* **Engineering Solution:** Replaced the infinite scale loop with a hardware-accelerated static fade-in. Once mounted, the scale locks at `1.0`. Static high-contrast styling replaced infinite `animate-pulse` tags.
-* **Outcome:** **Idle GPU utilization dropped from 70.3% to 0.0% – 1.0%.**
+### Library and metadata
+- Search TMDB for shows and movies and add them to your library.
+- Fetches seasons, episodes, air dates, synopses, ratings, posters, backdrops and episode stills, and caches the images locally so the library still looks right offline.
+- A background check after launch picks up new seasons, newly scheduled episodes and changed air dates for shows you track.
+- Dashboard with a resume-focused spotlight, Continue Watching, Recently Added, Upcoming Airings and New Season alerts.
+- Personal 0–10 ratings, separate from the TMDB score.
 
-### Case Study 2: Zero-CPU Subprocess Telemetry Loop
-* **The Problem:** Monitoring an external video player typically involves busy-waiting or thread sleep loops that waste CPU cycles and battery.
-* **Technical Implementation:** Architected an asynchronous child process supervisor in `src-tauri/src/vlc.rs` using `tokio::process::Command` and `tokio::select!`. Implemented dynamic loopback port probing (`8080..8090`) to prevent socket collisions, generated cryptographic one-time HTTP passwords, and polled VLC's status over non-blocking HTTP streams.
-* **Outcome:** **0.0% background CPU consumption** and **15.1 MB idle RAM** during active media playback, saving exact-second positions and detecting ≥90% completions.
+### Local files and the Inbox
+- Scans folders recursively and matches files to episodes from common naming patterns (`S01E02`, `1x02`, anime-style release names, multi-episode files).
+- Handles Windows long paths, `.lnk` shortcuts and symlink loops, and skips hidden and partially downloaded files.
+- Files it can't match go to an **Inbox**, grouped by guessed title, where you match a whole group in one click or map files to episodes by hand.
 
-### Case Study 3: 8-Dimensional Hero Recommendation Scoring Engine
-* **The Problem:** Initial versions displayed a single static show in the hero banner, missing opportunities to recommend in-progress series, newly aired episodes, or season finales.
-* **Technical Implementation:** Specified an 8-dimensional candidate scoring algorithm implemented in Rust:
-  $$\text{Score} = \text{Resume}(+200\text{k}) + \text{FreshAir}(+150\text{k}) + \text{Finale}(+100\text{k}) + \text{Recency} + \text{BingeVelocity} + \text{LocalFile}$$
-* **Outcome:** A fluid hero spotlight carousel with 8-second auto-rotation, smooth crossfades, and automatic fallback backfill across the user's library.
+### Watch history
+- A timeline grouped by day, with consecutive episodes of the same show collapsed into binge sessions.
+- Each play shows when you watched it, how far you got, and how long after airing you watched it.
+- Filter by TV or movies, remove individual plays or whole sessions (with undo), or clear the history.
 
----
-
-## ✨ Application Features
-
-### 🖥️ Fast, Clean Desktop Interface
-* **Deep Dark Aesthetic:** Designed around an ultra-dark palette (`#0D0F14`), translucent glassmorphism (`bg-[#1F222A]/60` with `backdrop-blur-md`), and signature VLC Orange accents (`#FF6B00`).
-* **Edge-to-Edge Hero Banner:** 450px backdrop banner featuring multi-stop diagonal gradient fades, bold typography, and a 1-click **Resume Watching** action.
-* **"Continue Watching" Carousel:** Snap-scrolling row of wide episode cards with bottom-edge progress bars indicating your exact resume point.
-* **DOM Virtualization (`VirtualPoster`):** High-performance `IntersectionObserver` windowing engine unmounting off-screen DOM nodes, allowing 1,000+ shows to render at smooth 60 FPS under 50MB RAM (15.1 MB idle).
-* **Hardware-Accelerated Fluidity:** View switching and accordion transitions powered by `framer-motion` with built-in `prefers-reduced-motion` battery-saving support.
-
-### 📡 Smart VLC Playhead Telemetry (Zero Background CPU)
-* **100% Asynchronous Tracking:** Powered by `tokio::process::Command` and `tokio::select!` event loops consuming zero background CPU while watching.
-* **Dynamic Loopback Port Probing:** Automatically detects free local ports between `8080` and `8090` to avoid conflicts, generating a cryptographic one-time session password.
-* **Exact-Second Playhead Resumption:** Remembers your exact position in seconds (`last_position`). Launching an episode resumes playback seamlessly via VLC's `--start-time` flag.
-* **Intelligent Completion Thresholds:** Automatically marks episodes as completed and increments rewatch counts when you watch **≥ 90%** of the runtime or exit within **120 seconds** of the end credits.
-* **Auto-Session Chaining & Isolation:**
-  * Episodes watched consecutively within **6 hours** (< 21,600s) are linked into a single cohesive Binge Session UUID.
-  * Switching to a different television series immediately terminates the chain and mints a fresh session ID.
-
-### 📖 History Diary & Binge Timeline
-* **Interactive BingeBlock Accordions:** Groups multi-episode binges into master-detail accordions with show titles, episode counts, total duration, and smooth auto-height physics.
-* **Midnight Crossover Detection:** Calculates UNIX epoch timestamps; if a binge spans past midnight, a distinct `<Moon />` indicator is displayed alongside duration metadata.
-* **Detailed Episode Breakdown:** Inspect individual watch timestamps, durations, and pause frequency counters.
-
-### 📁 High-Performance Media Scanner & Triage Inbox
-* **Blazing-Fast Directory Traversal:** Recursively scans thousands of nested folders in milliseconds using Rust's `walkdir` and multi-pattern regex (`S01E01`, `1x01`, `Ep 01`, etc.).
-* **Windows Long Path & Shortcut Support:** Seamlessly handles deep paths via Windows `\\?\` prefixing and resolves `.lnk` shortcuts using `parselnk`.
-* **Chunked IPC Streaming:** Batches file scans in groups of 50 (`scan-match-batch`) to eliminate memory spikes and prevent UI lockups during massive library scans.
-* **Persistent Triage Inbox:** Unmatched files are parsed and grouped by extracted title into a dedicated triage inbox for 1-click matching or manual linking.
-
-### 🛡️ Local-First SQLite Engine & Data Integrity
-* **ACID Relational Storage:** Managed with `rusqlite` in Write-Ahead Logging mode (`PRAGMA journal_mode = WAL;`, `PRAGMA synchronous = NORMAL;`, `PRAGMA foreign_keys = ON;`).
-* **Evolutionary Migration System:** Safe `ALTER TABLE` transactional migrations update database structures without data loss.
-* **Atomic Backup & Restore:** In-app one-click database backups with SHA-256 checksum verification, automated 3-backup rolling retention, and safe restore routines.
-* **Database Maintenance:** Built-in SQLite `VACUUM` and `PRAGMA optimize` maintenance tools to keep database queries instantaneous.
-* **OS Keyring Integration:** Stores TMDB API keys securely in the Windows Credential Manager, macOS Keychain, or Linux Secret Service.
+### Your data
+- Everything lives in one SQLite database under `%LOCALAPPDATA%\WatchMark`, using write-ahead logging.
+- Automatic daily backups with SHA-256 checksum files and a configurable number of kept copies, plus manual export, restore and database optimization from Settings.
+- The TMDB API key is stored in Windows Credential Manager, not in a plain-text settings file.
 
 ---
 
-## 🏗️ Architecture & Tech Stack
+## Getting started
 
-```mermaid
-graph TD
-    subgraph Frontend ["React 19 Frontend (src/)"]
-        UI[App Shell & Navigation]
-        Pages[Dashboard / Library / MediaDetails / History / Inbox / Settings]
-        Stores[Zustand Stores: useAppStore, useTaskStore, uiStore]
-        Hooks[useAsyncInvoke, useHorizontalScroll]
-        Motion[Framer Motion & Tailwind CSS]
-    end
+### Install a release
+1. Download `WatchMark_<version>_x64-setup.exe` from the [latest release](https://github.com/Headhunte-121/Watchmark/releases/latest) and run it. It installs for the current user, so no administrator prompt.
+2. Install [VLC Media Player](https://www.videolan.org/vlc/) if you don't have it, then set its location in **Settings → General**. **Restore Default** finds a standard VLC install automatically.
+3. Get a free TMDB API key ([TMDB account settings → API](https://www.themoviedb.org/settings/api)) and enter it in **Settings → General**.
+4. Search for a show, add it, then scan the folder that holds its files.
 
-    subgraph IPC ["Tauri v2 IPC Bridge"]
-        Commands[Tauri Commands 40+ Endpoints]
-        Events[Event Bus: scan-match-batch, vlc-closed, tray-scan]
-        Protocols[Custom URI Protocol: watchmark://]
-    end
+Each release also includes an MSI installer, a standalone `WatchMark.exe`, and a `SHA256SUMS.txt` you can use to verify the downloads.
 
-    subgraph Backend ["Rust Backend (src-tauri/src/)"]
-        DB[(SQLite Engine: db.rs & rusqlite)]
-        VLC[VLC Daemon: vlc.rs & tokio async]
-        Scanner[Media Scanner: scanner.rs & walkdir]
-        TMDB[TMDB Client: tmdb.rs & reqwest-retry]
-        Backup[Backup & Integrity: backup.rs]
-        Sec[OS Keyring: settings.rs]
-    end
+### Build from source
+Requirements: Node.js 20 or later, the Rust toolchain (stable), and the Microsoft C++ Build Tools that Tauri needs on Windows.
 
-    subgraph External ["External Ecosystem"]
-        VLC_App[VLC Media Player via HTTP API]
-        TMDB_API[The Movie Database REST API v3]
-        Disk[Local Media Storage & Video Files]
-    end
-
-    UI --> Stores
-    Stores --> Hooks
-    Hooks --> Commands
-    Commands --> Backend
-    Events --> UI
-
-    VLC <-->|HTTP Polling & Process Spawning| VLC_App
-    TMDB <-->|Metadata & Posters| TMDB_API
-    Scanner <-->|Recursive Traversal| Disk
-    DB <-->|ACID Transactions| Disk
-    Protocols -->|Range Video Streaming| Disk
-```
-
-### Technology Matrix & Architectural Rationale
-
-| Layer | Technology | Architectural Rationale |
-| :--- | :--- | :--- |
-| **Desktop Shell** | **Tauri v2.10** | Replaced Electron to eliminate ~200MB of Chromium idle bloat; gives native OS windowing, custom protocols, and small executable sizes. |
-| **Backend Core** | **Rust 2021 + Tokio** | Guarantees thread-safety and memory safety; Tokio provides asynchronous event loops for VLC HTTP polling without blocking the UI. |
-| **Frontend UI** | **React 19 + TypeScript** | Strict end-to-end type safety between Rust IPC structs and frontend state; modern component lifecycle. |
-| **Styling & Physics**| **Tailwind CSS + Framer Motion**| Utility-first dark cinema aesthetic with spring-based auto-height layout physics for accordions. |
-| **Database** | **SQLite (rusqlite) + WAL** | Local-first ACID persistence; Write-Ahead Logging allows concurrent read operations while writes execute safely. |
-| **State Management**| **Zustand 5** | Lightweight, boilerplate-free state management for reactive UI updates and task notifications. |
-| **Security** | **OS Keyring (`keyring-rs`)** | Secure storage of API keys inside native OS credential vaults (Windows Credential Manager / macOS Keychain). |
-
----
-
-## 🛠️ Requirements & Installation
-
-### Prerequisites
-
-| Dependency | Minimum Version | Required For |
-| :--- | :--- | :--- |
-| **Node.js** | `>= 20.0.0` (LTS) | React 19 Frontend & Vite 7 Bundler |
-| **Rust & Cargo** | `>= 1.80.0` (2021 Edition) | Native Rust Backend & SQLite Concurrency |
-| **VLC Media Player** | `>= 3.0.0` | Local Playhead Telemetry & Hardware Playback |
-| **TMDB API Key** | v3 Developer Key | Metadata, Posters & Season Episode Details ([Free Account](https://www.themoviedb.org/settings/api)) |
-| **C++ Build Tools** | MSVC (Windows) / GCC (Linux) | Native Desktop Windowing & SQLite Bindings |
-
----
-
-### Step-by-Step Installation
-
-#### 1. Clone the Repository
 ```bash
-git clone https://github.com/Headhunte-121/timestampet.git
-cd timestampet/watchmark-tauri
-```
-
-#### 2. Install Frontend Dependencies
-```bash
+git clone https://github.com/Headhunte-121/Watchmark.git
+cd Watchmark/watchmark-tauri
 npm install
-```
-
-#### 3. Run in Local Development Mode (with Hot Reload)
-```bash
 npm run tauri dev
 ```
-* Vite starts on `http://127.0.0.1:1420`.
-* The Rust backend initializes SQLite in WAL mode and opens the native WatchMark window.
-* Diagnostic logs are piped to stdout and written to `%LOCALAPPDATA%\WatchMark\watchmark.log`.
+
+`npm run tauri build` produces the release executable and installers in `watchmark-tauri/src-tauri/target/release/`. See [Local development](docs/dev/LOCAL_DEVELOPMENT.md) for logs, data locations and troubleshooting.
 
 ---
 
-### 📦 Compiling a Standalone Production Executable
+## Architecture
 
-To compile a fully optimized, standalone desktop release with Link-Time Optimization (LTO):
+```mermaid
+graph LR
+    subgraph UI["Frontend · React 19 + TypeScript"]
+        Views[Views: Dashboard, Library, Show page,<br/>Search, Inbox, History, Settings]
+        Stores[Zustand stores]
+    end
 
-```bash
-cd watchmark-tauri
-npm run tauri build
+    subgraph Core["Backend · Rust + Tokio (Tauri v2)"]
+        Cmd[Tauri commands and events]
+        DB[(SQLite · rusqlite)]
+        Queue[Write queue]
+        VLC[VLC supervisor]
+        Scan[File scanner]
+        TMDB[TMDB client]
+    end
+
+    Views <-->|invoke / events| Cmd
+    Stores --- Views
+    Cmd --> DB
+    Cmd --> Queue --> DB
+    Cmd --> VLC <-->|HTTP on 127.0.0.1| VLCApp[VLC Media Player]
+    Cmd --> Scan --> Disk[Your video files]
+    Cmd --> TMDB <-->|HTTPS| TMDBAPI[TMDB API]
 ```
 
-The compiled release packages are output to:
-* **Windows:** `watchmark-tauri/src-tauri/target/release/watchmark-tauri.exe` (and NSIS installer in `bundle/nsis/`)
-* **macOS:** `watchmark-tauri/src-tauri/target/release/bundle/macos/WatchMark.app` (and `.dmg`)
-* **Linux:** `watchmark-tauri/src-tauri/target/release/bundle/deb/` (and `.AppImage`)
-
----
-
-## 🗺️ Project Status & Roadmap
-
-WatchMark uses native **GitHub Milestones and Issues** to track upcoming work:
-
-| Version | Focus Area | Status |
+| Layer | Technology | Why |
 | :--- | :--- | :--- |
-| **v1.0.0** | Core Architecture, SQLite WAL & VLC Telemetry | ✅ Completed |
-| **v1.1.0** | Filesystem Scanner, Triage Inbox & OS Keyring | ✅ Completed |
-| **v1.2.1** | Spotlight Recommendation, Timeline Virtualization, GPU Fix & Watch History Overhaul | 🚀 Current Stable |
-| **v1.3.0** | Library Intelligence, Multi-Filtering & Deep Cast/Crew Metadata | 🔨 In Active Development |
-| **v1.4.0** | VLC Audio/Subtitle Track Switcher & Background Tray Daemon | 📋 Planned |
-| **v1.5.0** | Viewing Analytics Dashboard & Trakt/Letterboxd Data Portability | 📋 Planned |
-| **v2.0.0** | Ambient Chromatic Cinema UI & Universal Command Palette (`Ctrl+K`) | 🔮 Future |
+| Desktop shell | Tauri v2 | Small installer and native windowing using the system WebView2 instead of bundling Chromium. |
+| Backend | Rust 2021, Tokio | Type and memory safety for file, process and database work; async I/O for polling VLC and calling TMDB. |
+| Frontend | React 19, TypeScript, Vite | Typed components; fast rebuilds during development. |
+| Styling | Tailwind CSS, Framer Motion | Consistent dark design tokens and view transitions, with reduced-motion support. |
+| State | Zustand | Small global stores for settings, background tasks and cached views. |
+| Storage | SQLite via rusqlite (WAL mode) | A single local file that handles concurrent reads well and needs no server. |
 
-For detailed breakdowns, see [**ROADMAP.md**](ROADMAP.md) and the [**GitHub Milestones**](https://github.com/Headhunte-121/timestampet/milestones).
+More detail: [System design](docs/architecture/SYSTEM_DESIGN.md) and [Database schema](docs/architecture/DATABASE_SCHEMA.md).
 
----
+### Repository layout
 
-## ⚖️ Legal & DMCA Compliance Statement
-
-**WatchMark is strictly a personal, client-side media cataloging diary and offline library manager.**
-* **No Content Hosting, Streaming, or Distribution:** WatchMark does not host, provide, stream, download, scrape, or distribute any copyrighted video, audio, or media files.
-* **User-Owned Media Files Only:** The application operates exclusively as a local metadata viewer and organizer for legally acquired, user-owned media files residing on the user's personal storage devices.
-* **Official API Compliance:** All show, movie, and episode metadata and artwork are retrieved strictly via the official [The Movie Database (TMDb) API](https://www.themoviedb.org/documentation/api) in full compliance with TMDb's API Terms of Service. This product uses the TMDb API but is not endorsed or certified by TMDb.
-* **Zero Third-Party Scraping or Piracy Mechanisms:** WatchMark does not contain any web-scraping utilities, torrent protocols, peer-to-peer distribution networks, bypass modules, or circumvention tools.
-
----
-
-## 📜 License & Acknowledgments
-
-This project is open-source software licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
-
-### Acknowledgments
-* **[VideoLAN (VLC)](https://www.videolan.org/):** For building the world's most versatile, open-source media player.
-* **[The Movie Database (TMDb)](https://www.themoviedb.org/):** For their generous, developer-friendly metadata API.
-* **[Tauri Project](https://tauri.app/):** For making lightweight, memory-safe desktop application development in Rust a reality.
+```text
+watchmark-tauri/
+├── src/                 React frontend (components, stores, hooks, utilities)
+└── src-tauri/
+    ├── src/             Rust backend (commands, db, vlc, scanner, tmdb, backup, ...)
+    ├── capabilities/    Tauri permission configuration
+    └── tauri.conf.json  App and installer configuration
+docs/                    Architecture, development and testing documentation
+```
 
 ---
 
-<div align="center">
-  <sub>WatchMark Media Tracker • Fast, Local-First Media Tracking for Desktop</sub>
-</div>
+## How it was built
+
+WatchMark was written with AI coding agents doing most of the typing, while I set the direction, broke the work down and reviewed the results. Roughly:
+
+1. **Plan in small pieces.** I split the app into areas (storage, VLC tracking, scanning, metadata, UI) and then into small, individually testable tasks, each tracked as an issue.
+2. **One task at a time.** Each task was handed to an agent with explicit rules ([`AGENTS.md`](AGENTS.md)): where code lives, which project patterns to follow, and that the code must compile before a task counts as done.
+3. **Review and test by hand.** I read the diffs, ran the app on my own machine, and checked behaviour with Task Manager, the WebView DevTools and the SQLite database itself.
+
+What worked well: the Rust compiler and TypeScript's type checker catch a lot of agent mistakes immediately, and small tasks kept changes reviewable. What didn't: "it compiles" is not "it works". Several real bugs survived because nothing exercised them end to end. One example: a database update in the playback tracker that compared a number with a date string, so watch progress was never saved. The [development process](docs/dev/DEVELOPMENT_PROCESS.md) page covers the workflow and these lessons in more detail.
+
+---
+
+## Testing
+
+- **Rust unit tests** (90) cover the database layer, migrations, backups and restore, filename parsing, input sanitization, the task queue and parts of the TMDB client. Run them with `cargo test` in `watchmark-tauri/src-tauri`.
+- **Type checking** with `cargo check` and `tsc` runs on every change, and in CI on GitHub Actions.
+- **Manual testing** on Windows 11 covers the parts that are hard to unit test: VLC playback, the UI and real media folders.
+
+There are no automated frontend or end-to-end tests yet. See [Testing](docs/testing/TESTING.md) for what is and isn't covered.
+
+---
+
+## Known limitations
+
+- **Windows only.** Some code is written to compile elsewhere, but only Windows 10/11 has been built and tested.
+- **VLC only.** Tracking depends on VLC's HTTP interface; other players aren't supported.
+- **Needs TMDB.** Adding shows and refreshing metadata require a TMDB API key and a network that can reach TMDB. Already-added shows and cached artwork keep working offline.
+- **Older watch history.** Plays recorded before v1.2.1 have no saved progress because of a bug fixed in that release.
+- **Open issues** from a code audit are tracked for upcoming releases, including the TV and movie libraries loading only their first 50 items and a too-permissive local file access configuration.
+
+---
+
+## Roadmap
+
+| Version | Focus | Status |
+| :--- | :--- | :--- |
+| v1.0 | Core architecture, SQLite storage, VLC tracking | Released |
+| v1.1 | Folder scanner, Inbox, credential storage | Released |
+| v1.2 | Dashboard spotlight, history timeline, performance fixes | Released (v1.2.1 is current) |
+| v1.3 | Library filtering and sorting, cast and crew details | Planned |
+| v1.4 | VLC audio/subtitle track selection, tray mode | Planned |
+| v1.5 | Viewing statistics, import/export | Planned |
+| v2.0 | Visual refresh, command palette (`Ctrl+K`) | Idea stage |
+
+Details are in [ROADMAP.md](ROADMAP.md) and the [changelog](CHANGELOG.md).
+
+---
+
+## Legal
+
+WatchMark is a personal cataloguing tool for media files you own. It does not host, stream, download or share any media. Metadata and images come from the official TMDB API.
+
+This product uses the TMDB API but is not endorsed or certified by TMDB.
+
+## License and acknowledgements
+
+Released under the [MIT License](LICENSE).
+
+Thanks to [VideoLAN](https://www.videolan.org/) for VLC, [TMDB](https://www.themoviedb.org/) for their API, and the [Tauri](https://tauri.app/) project.

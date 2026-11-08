@@ -1,249 +1,167 @@
-# Database Schema & Storage Architecture
+# Database schema
 
-This document specifies the SQLite relational database architecture of **WatchMark**, detailing table structures, indexes, integrity constraints, and transactional migration lifecycles.
+WatchMark keeps all of its data in one SQLite file:
 
----
+```text
+%LOCALAPPDATA%\WatchMark\WatchMark\data\db\watchmark.db
+```
 
-## 🗄️ Relational Data Model
+The schema is defined and migrated in `watchmark-tauri/src-tauri/src/db.rs`. This page describes schema version **18**.
 
-WatchMark uses **SQLite** through the `rusqlite` crate, configured with foreign key cascades and Write-Ahead Logging.
+## Connection settings
+
+Every connection applies:
+
+| Setting | Value | Why |
+| :--- | :--- | :--- |
+| `journal_mode` | `WAL` | Reads can run while a write is in progress. |
+| `synchronous` | `NORMAL` | Safe with WAL, and faster than `FULL`. |
+| `foreign_keys` | `ON` | Enforces the relationships below, including cascading deletes. |
+| `busy_timeout` | 5000 ms | Waits briefly for a lock instead of failing immediately. |
+| `temp_store` | `MEMORY` | Temporary tables and indexes are kept in RAM. |
+| `cache_size` | -2000 (≈ 2 MB) | Keeps the page cache small. |
+
+## Relationships
 
 ```mermaid
 erDiagram
-    Media ||--o{ Episodes : "1 : N (Cascades)"
-    Media ||--o{ Local_Files : "1 : N"
-    Episodes ||--o| Local_Files : "1 : 1 (Linked Path)"
-    Episodes ||--o{ History : "1 : N (Watch Events)"
+    Media ||--o{ Episodes : has
+    Media ||--o| Season_Alerts : "may have"
+    Episodes ||--o| Local_Files : "linked to"
+    Episodes ||--o{ History : "played in"
 
     Media {
-        INTEGER id PK
-        TEXT tmdb_id
-        TEXT type "TV | Movie | Unknown"
-        TEXT title
-        TEXT synopsis
-        TEXT poster_path
-        TEXT backdrop_path
-        TEXT release_date
-        INTEGER user_rating "0-10 or NULL"
-        INTEGER total_episodes
-        INTEGER completed_eps
-        INTEGER is_legacy
+        int id PK
+        text tmdb_id
+        text type
+        text title
     }
-
     Episodes {
-        INTEGER id PK
-        INTEGER media_id FK
-        INTEGER season_num "u32"
-        INTEGER ep_num "u32"
-        TEXT title
-        TEXT air_date
-        INTEGER runtime "Minutes"
-        TEXT overview
-        TEXT still_path
-        INTEGER watched_count
-        INTEGER last_position "Seconds"
-        REAL completion_ratio
+        int id PK
+        int media_id FK
+        int season_num
+        int ep_num
     }
-
     Local_Files {
-        INTEGER id PK
-        INTEGER episode_id FK "Nullable"
-        INTEGER media_id FK "Nullable"
-        TEXT file_path UK
-        INTEGER file_size
-        INTEGER duration
-        TEXT file_hash
-        TEXT last_scanned
+        int id PK
+        int episode_id FK
+        text file_path
     }
-
     History {
-        INTEGER id PK
-        INTEGER episode_id FK
-        TEXT session_id "UUID"
-        INTEGER start_time "Epoch seconds"
-        INTEGER end_time "Epoch seconds"
-        INTEGER duration "Watched seconds"
-        INTEGER pause_count
-        REAL completion_ratio
-        INTEGER is_legacy
+        int id PK
+        int episode_id FK
+        int timestamp
+        text session_id
     }
-
-    Unmatched_Files {
-        INTEGER id PK
-        TEXT file_path UK
-        TEXT parsed_series
-        INTEGER parsed_season
-        INTEGER parsed_episode
-        TEXT group_key
-        INTEGER file_size
-        TEXT discovered_at
+    Season_Alerts {
+        int media_id PK
+        int season_num
     }
 ```
 
----
+`Unmatched_Files` (the Inbox) and `Collections` (cached movie franchises) are standalone tables.
 
-## 📋 Table Definitions & Constraints
+Deleting a show deletes its episodes, and through them its file links and history, via `ON DELETE CASCADE`. Video files on disk are never deleted.
 
-### 1. `Media` Table
-Represents a TV Show or Movie in the user's library.
+## Tables
 
-```sql
-CREATE TABLE IF NOT EXISTS Media (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    tmdb_id TEXT NOT NULL,
-    "type" TEXT NOT NULL DEFAULT 'TV',
-    "title" TEXT NOT NULL,
-    synopsis TEXT,
-    poster_path TEXT,
-    backdrop_path TEXT,
-    release_date TEXT DEFAULT '0000-00-00',
-    user_rating INTEGER CHECK(user_rating >= 0 AND user_rating <= 10) DEFAULT NULL,
-    status TEXT DEFAULT 'Tracking',
-    total_episodes INTEGER DEFAULT 0,
-    completed_eps INTEGER DEFAULT 0,
-    is_legacy INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(tmdb_id, "type")
-);
-```
-* **Composite Uniqueness**: `UNIQUE(tmdb_id, "type")` ensures that a Movie and TV Show sharing the same TMDB numerical ID can coexist without collisions.
-* **Rating Boundaries**: `CHECK(user_rating >= 0 AND user_rating <= 10)` enforces strict rating parameters while allowing `NULL` for unrated media.
+### Media
+One row per show or movie in the library.
 
----
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `id` | INTEGER PK | |
+| `tmdb_id` | TEXT | TMDB identifier. Unique together with `type`, since a show and a movie can share an ID. |
+| `type` | TEXT | `TV`, `Movie` or `Unknown`. Defaults to `TV`. |
+| `title`, `synopsis` | TEXT | Synopsis is capped at 10,000 characters. |
+| `poster_path`, `backdrop_path` | TEXT | TMDB image paths. `NULL` when TMDB has none. |
+| `backdrop_fallback` | TEXT | `gradient` when neither a backdrop nor a poster exists. |
+| `total_episodes`, `status` | INTEGER, TEXT | |
+| `vote_average` | REAL | TMDB rating, rounded to one decimal. |
+| `user_rating` | INTEGER | Your rating, 0–10. `NULL` means unrated (distinct from 0). |
+| `release_date`, `is_exact_date` | TEXT, BOOLEAN | Year-only dates are stored as `YYYY-01-01` with `is_exact_date = 0`. |
+| `genres`, `networks` | TEXT | Comma-separated. |
+| `collection_id`, `collection_name` | INTEGER, TEXT | Movie franchise, if any. |
 
-### 2. `Episodes` Table
-Represents individual episodes belonging to a TV show, or single records for movies.
+### Episodes
+One row per episode. Movies get a single virtual episode (season 1, episode 1) so playback and history work the same way for both.
 
-```sql
-CREATE TABLE IF NOT EXISTS Episodes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    media_id INTEGER NOT NULL,
-    season_num INTEGER NOT NULL CHECK(season_num >= 0),
-    ep_num INTEGER NOT NULL CHECK(ep_num >= 0),
-    title TEXT,
-    air_date TEXT,
-    runtime INTEGER DEFAULT 0,
-    overview TEXT,
-    still_path TEXT,
-    watched_count INTEGER DEFAULT 0,
-    last_position INTEGER DEFAULT 0,
-    completion_ratio REAL DEFAULT 0.0,
-    FOREIGN KEY(media_id) REFERENCES Media(id) ON DELETE CASCADE,
-    UNIQUE(media_id, season_num, ep_num)
-);
-```
-* **Cascading Cleanup**: `FOREIGN KEY(media_id) REFERENCES Media(id) ON DELETE CASCADE` guarantees that deleting a show atomically deletes all associated episodes.
-* **Positive Integers**: `CHECK(season_num >= 0)` and `CHECK(ep_num >= 0)` prevent negative integer corruptions, treating Season `0` as specials.
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `id` | INTEGER PK | |
+| `media_id` | INTEGER FK → Media | `ON DELETE CASCADE` |
+| `season_num`, `ep_num` | INTEGER | Both ≥ 0; season 0 is Specials. Unique per show. |
+| `title`, `overview`, `season_overview` | TEXT | |
+| `runtime` | INTEGER | Minutes. Corrected from the actual file length when they differ by more than 2 minutes. |
+| `still_path` | TEXT | |
+| `air_date`, `is_exact_date` | TEXT, BOOLEAN | |
+| `is_air_date_manual` | BOOLEAN | When set, TMDB refreshes don't overwrite `air_date`. |
+| `status` | TEXT | `Unwatched`, `Watching` or `Completed`. |
+| `last_position` | INTEGER | Resume position in seconds. Reset to 0 on completion. |
+| `watch_count`, `completed_date` | INTEGER, TEXT | |
 
----
+### Local_Files
+Links an episode to a video file on disk.
 
-### 3. `History` Table
-Represents discrete watch events, playhead sessions, and binge chaining.
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `id` | INTEGER PK | |
+| `episode_id` | INTEGER FK → Episodes | Unique: one file per episode. `ON DELETE CASCADE`. |
+| `file_path` | TEXT | Unique. |
+| `file_size` | INTEGER | Used to keep the larger file when two match, and to recognise moved files. |
+| `file_hash` | TEXT | Sampled hash (start, middle and end of the file) computed before playback. |
 
-```sql
-CREATE TABLE IF NOT EXISTS History (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    episode_id INTEGER NOT NULL,
-    session_id TEXT NOT NULL,
-    start_time INTEGER NOT NULL,
-    end_time INTEGER NOT NULL,
-    duration INTEGER DEFAULT 0,
-    pause_count INTEGER DEFAULT 0,
-    completion_ratio REAL DEFAULT 0.0,
-    is_legacy INTEGER DEFAULT 0,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(episode_id) REFERENCES Episodes(id) ON DELETE CASCADE
-);
-```
-* **Epoch Timestamps**: Stored as 64-bit integer UNIX epochs (`start_time`, `end_time`) for timezone-independent calculations and Midnight Crossover detection.
+### History
+One row per play. Indexed on `(timestamp DESC, id DESC)` for the timeline.
 
----
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `id` | INTEGER PK | |
+| `episode_id` | INTEGER FK → Episodes | `ON DELETE CASCADE` |
+| `timestamp` | INTEGER | Unix time (UTC) when the play started. |
+| `start_time`, `end_time` | DATETIME | Text timestamps from the VLC session. `start_time` is `NULL` for rows created by **Mark season watched**. |
+| `session_id` | TEXT | Shared by plays of the same show less than 6 hours apart. |
+| `completion_ratio` | REAL | 0.0–1.0, how far this play got. |
+| `pause_count` | INTEGER | |
+| `is_legacy` | BOOLEAN | Backdated archive entries. |
+| `status`, `last_position` | TEXT, INTEGER | Older columns. Some code paths still write them, but the History view reads `completion_ratio` and the episode's own `last_position` instead. |
 
-### 4. `Local_Files` Table
-Represents discovered video files on disk linked to library media.
+### Unmatched_Files
+The Inbox: files the scanner couldn't match.
 
-```sql
-CREATE TABLE IF NOT EXISTS Local_Files (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    episode_id INTEGER,
-    media_id INTEGER,
-    file_path TEXT NOT NULL UNIQUE,
-    file_size INTEGER,
-    duration INTEGER,
-    file_hash TEXT,
-    last_scanned DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(episode_id) REFERENCES Episodes(id) ON DELETE SET NULL,
-    FOREIGN KEY(media_id) REFERENCES Media(id) ON DELETE CASCADE
-);
-```
+| Column | Type | Notes |
+| :--- | :--- | :--- |
+| `file_path` | TEXT PK | |
+| `filename` | TEXT | |
+| `parsed_series`, `parsed_season`, `parsed_episode` | TEXT, INTEGER, INTEGER | What the scanner guessed. |
+| `group_key` | TEXT | Cleaned show name used to group files in the Inbox. |
 
----
+### Collections
+Cached movie franchise data from TMDB: `id`, `name`, `overview`, `poster_path`, `backdrop_path`, and `parts` (the franchise's movies as JSON).
 
-### 5. `Unmatched_Files` Table
-Persistent triage queue for media files discovered during recursive directory scans that could not be automatically matched.
+### Season_Alerts
+One row per show with a newly detected season: `media_id` (PK, FK → Media), `season_num`, `dismissed`, `created_at`.
 
-```sql
-CREATE TABLE IF NOT EXISTS Unmatched_Files (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    file_path TEXT NOT NULL UNIQUE,
-    parsed_series TEXT,
-    parsed_season INTEGER,
-    parsed_episode INTEGER,
-    group_key TEXT,
-    file_size INTEGER,
-    discovered_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
+## Indexes
 
----
+| Index | Purpose |
+| :--- | :--- |
+| `idx_history_timestamp` on `History(timestamp DESC, id DESC)` | Paging through the history timeline |
+| `idx_media_title` on `Media(title)` | Sorting the library by title |
+| `idx_media_tmdb_rating` on `Media(vote_average)` | Sorting the library by TMDB rating |
 
-## ⚙️ SQLite PRAGMA Configuration
+## Migrations
 
-WatchMark tunes SQLite for high concurrency, low latency, and zero data corruption:
+The schema version is stored in SQLite's `PRAGMA user_version`. On startup, `init_db` runs every migration newer than the stored version, in order:
 
-```rust
-// Executed on every database connection
-conn.pragma_update(None, "journal_mode", "WAL")?;
-conn.pragma_update(None, "synchronous", "NORMAL")?;
-conn.pragma_update(None, "foreign_keys", "ON")?;
-conn.pragma_update(None, "cache_size", -2000)?; // 2MB cache
-conn.pragma_update(None, "temp_store", "MEMORY")?;
-```
+- Each migration runs inside a transaction and bumps `user_version` only after it succeeds. A failed migration rolls back and leaves the database at its previous version.
+- Adding a column that already exists (for example after an interrupted upgrade) is tolerated; any other error aborts the migration.
+- Changes SQLite can't make with `ALTER TABLE`, such as adding a `UNIQUE` constraint, rebuild the table: create a new table, copy the rows, drop the old one, rename.
 
-* **Write-Ahead Logging (WAL)**: Allows background file scans to write records concurrently while the React UI reads library and dashboard metrics, preventing database lock exceptions.
-* **Safe PRAGMA Execution**: Uses `conn.pragma_update` rather than `conn.execute` to safely swallow return rows without triggering rusqlite panic conditions.
+Examples of what migrations have done over time: converting History timestamps from text to Unix time, adding `last_position` and resume support, moving user ratings to a nullable 0–10 scale, adding genres, networks and collections, and adding uniqueness constraints on file paths.
 
----
+## Backups and restore
 
-## 🔄 Evolutionary Transactional Migrations
-
-To ensure users never lose historical watch counts or ratings when upgrading versions, WatchMark utilizes an evolutionary migration system based on `PRAGMA user_version`:
-
-```rust
-pub fn run_migrations(conn: &mut Connection) -> Result<(), AppError> {
-    let current_version: i32 = conn.query_row("PRAGMA user_version;", [], |r| r.get(0))?;
-    
-    // Migrations wrapped in atomic transactions
-    if current_version < 1 {
-        let tx = conn.transaction()?;
-        // Safe ALTER TABLE executions
-        tx.pragma_update(None, "user_version", 1)?;
-        tx.commit()?;
-    }
-    // Successive migrations...
-    Ok(())
-}
-```
-
-* **Atomic Transactions**: If the application crashes mid-migration, the database rolls back cleanly.
-* **Safe Column Additions**: Column additions use conditional checks or safely catch duplicate column errors, preventing migration deadlocks.
-
----
-
-## 🛡️ Atomic Database Backups & Verification
-
-Located in `src-tauri/src/backup.rs`:
-* **Online SQLite Backup API**: Backups are created using SQLite's native backup API, capturing consistent snapshots even while the database is actively being read.
-* **SHA-256 Checksums**: Every backup file generates an accompanying `.sha256` checksum file to guarantee data integrity before restoring.
-* **Automatic Rotation**: Keeps a rolling window of recent backups in `%LOCALAPPDATA%\WatchMark\backups\`, pruning older archives.
+- **Automatic backups** (once a day) use SQLite's online backup API, which takes a consistent copy while the app keeps running. Each copy is written to `data\backups\watchmark_<date>_<time>.bak`, flushed to disk, and given a `.sha256` checksum file. Older backups beyond the retention limit (default 5) are deleted. A backup is skipped if the drive has less than 10 MB free.
+- **Manual export** writes a compacted copy with `VACUUM INTO` to a location you choose.
+- **Restore** checks the chosen file (SQLite `integrity_check`, plus its checksum when a `.sha256` file exists), stages it as `watchmark.db.pending`, and restarts. On the next start, before the database is opened, the current file is renamed to `watchmark.db.old` and the staged file takes its place. If the swap fails, the old file is put back.

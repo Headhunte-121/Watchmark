@@ -23,8 +23,8 @@ We are committed to providing a welcoming, inclusive, and harassment-free experi
 ### Cloning and Running
 ```bash
 # 1. Clone the repository
-git clone https://github.com/Headhunte-121/timestampet.git
-cd timestampet
+git clone https://github.com/Headhunte-121/Watchmark.git
+cd Watchmark
 
 # 2. Navigate to the Tauri project
 cd watchmark-tauri
