@@ -14,6 +14,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 import { NewSeasonAlertBanner, NewSeasonAlert } from "./NewSeasonAlertBanner";
 import { UpcomingAiringRow, UpcomingAiring } from "./UpcomingAiringRow";
+import { NewSeasonBadge } from "./ui/NewSeasonBadge";
 
 // Types matching the Rust backend structure
 interface Episode {
@@ -47,6 +48,7 @@ interface Media {
   completed_eps: number;
   media_type: string;
   is_date_known: boolean;
+  new_season?: number | null;
 }
 
 interface Stats {
@@ -776,6 +778,8 @@ export default function Dashboard({ onMediaSelect, refreshTrigger, searchQuery =
                       <Icon icon={Play} fill="currentColor" className="w-6 h-6 ml-1" />
                     </button>
                   </div>
+
+                  <NewSeasonBadge season={media.new_season} className="absolute top-2 left-2 z-20" />
 
                   {/* Always-on Top-Right Star Rating pill */}
                   {media.user_rating !== null && media.user_rating > 0 && (

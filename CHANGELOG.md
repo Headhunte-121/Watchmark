@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+* **New Season badges**: Shows whose next season (season 2 or later) premiered in the last 30 days now carry an orange **New Season** badge on their posters in the TV library and the Dashboard's Recently Added row, and that season's tab is marked **New** on the show page.
+
 ## [1.2.1] - 2026-11-08
 
 ### Added

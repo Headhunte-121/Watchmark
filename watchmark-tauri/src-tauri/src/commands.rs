@@ -874,6 +874,7 @@ pub fn get_media_details_db(
 
     handle_panic(|| {
         let conn = crate::db::get_readonly_connection()?;
+        let new_seasons = load_new_seasons(&conn);
 
         let mut stmt = conn.prepare("SELECT * FROM Media WHERE id=?")?;
         let mut media: Option<Value> = None;
@@ -1000,6 +1001,7 @@ pub fn get_media_details_db(
                 seasons.push(1);
             }
             m["seasons"] = json!(seasons);
+            m["new_season"] = json!(new_seasons.get(&media_id).copied());
 
             let mut eps_stmt = conn.prepare(
                 "
@@ -2091,6 +2093,7 @@ pub async fn get_dashboard_data(
     let result = tokio::task::spawn_blocking(move || {
         handle_panic(std::panic::AssertUnwindSafe(|| {
             let conn = crate::db::get_readonly_connection()?;
+            let new_seasons = load_new_seasons(&conn);
 
         // 1. Algorithmic Hero Spotlight Carousel Selection
         tracing::info!("[BACKEND] 🧠 Running intelligent multi-item Hero Carousel algorithm...");
@@ -2412,6 +2415,7 @@ pub async fn get_dashboard_data(
                 collection_parts: None,
                 seasons: Vec::new(),
                 episodes: Vec::new(),
+                new_season: new_seasons.get(&row.get::<_, i32>(0)?).copied(),
             })
         }) {
             for m in rows.flatten() {
@@ -2528,6 +2532,7 @@ pub async fn get_library_data(
         handle_panic(std::panic::AssertUnwindSafe(|| {
             tracing::info!("[BACKEND] 🧠 Filtering and sorting library data...");
             let conn = crate::db::get_readonly_connection()?;
+            let new_seasons = load_new_seasons(&conn);
 
             let mut base_query = "
                 SELECT m.*,
@@ -2649,6 +2654,7 @@ pub async fn get_library_data(
                     collection_parts: None,
                     seasons: Vec::new(),
                     episodes: Vec::new(),
+                    new_season: new_seasons.get(&row.get::<_, i32>(0)?).copied(),
                 });
             }
 
@@ -2747,6 +2753,46 @@ pub fn fetch_unmatched_files() -> Result<Vec<UnmatchedFile>, AppError> {
 
         Ok(files)
     })
+}
+
+// ---------------------------------------------------------------------------
+// New Season badges
+// ---------------------------------------------------------------------------
+
+/// How long after its premiere a season counts as "new".
+pub const NEW_SEASON_WINDOW_DAYS: i64 = 30;
+
+/// Shows whose latest new season (season 2 or later) premiered within the last
+/// `NEW_SEASON_WINDOW_DAYS` days and has already aired, keyed by media id.
+/// A season's premiere is its earliest known episode air date. Uses the local
+/// calendar date so "today's" premiere counts on the user's day. Failures are
+/// non-fatal: the badge is cosmetic, so an error yields an empty map.
+pub(crate) fn load_new_seasons(conn: &rusqlite::Connection) -> HashMap<i32, u32> {
+    let mut out = HashMap::new();
+    let window = format!("-{} days", NEW_SEASON_WINDOW_DAYS);
+    let Ok(mut stmt) = conn.prepare_cached(
+        "SELECT media_id, MAX(season_num)
+         FROM (
+             SELECT media_id, season_num, MIN(air_date) AS premiere
+             FROM Episodes
+             WHERE season_num > 1
+               AND air_date IS NOT NULL AND air_date != '' AND air_date != '0000-00-00'
+             GROUP BY media_id, season_num
+         )
+         WHERE premiere <= date('now', 'localtime')
+           AND premiere >= date('now', 'localtime', ?1)
+         GROUP BY media_id",
+    ) else {
+        return out;
+    };
+    if let Ok(rows) = stmt.query_map(params![window], |row| {
+        Ok((row.get::<_, i32>(0)?, row.get::<_, u32>(1)?))
+    }) {
+        for (media_id, season) in rows.flatten() {
+            out.insert(media_id, season);
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

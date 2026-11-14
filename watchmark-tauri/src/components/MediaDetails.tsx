@@ -520,11 +520,17 @@ export default function MediaDetails({ mediaId, initialSeasonNum, onBack, refres
                     if (s === activeSeason) return;
                     setActiveSeason(s);
                   }}
-                  className={`relative px-6 py-2 rounded-full font-bold transition-colors whitespace-nowrap ${
+                  className={`relative px-6 py-2 rounded-full font-bold transition-colors whitespace-nowrap inline-flex items-center gap-2 ${
                     s === activeSeason ? 'text-[#FFFFFF] bg-transparent' : 'text-[#8E929C] bg-transparent hover:text-white'
                   }`}
+                  aria-label={s === data.new_season ? `Season ${s}, new season` : undefined}
                 >
                   {s === 0 ? "Specials" : `Season ${s}`}
+                  {s === data.new_season && (
+                    <span className="px-1.5 py-0.5 rounded bg-[#FF6B00] text-white text-[9px] font-bold uppercase tracking-wider leading-none" title="Premiered recently">
+                      New
+                    </span>
+                  )}
                 </button>
               </div>
             ))}

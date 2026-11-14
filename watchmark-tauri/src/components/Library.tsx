@@ -9,6 +9,7 @@ import { useAppStore } from "../store/useAppStore";
 import { useAsyncInvoke } from "../hooks/useAsyncInvoke";
 import { SafeImage } from "./ui/SafeImage";
 import { VirtualPoster } from "./ui/VirtualPoster";
+import { NewSeasonBadge } from "./ui/NewSeasonBadge";
 
 export default function Library({ type, onMediaSelect, refreshTrigger, searchQuery = "", onSearchQueryChange }: any) {
   const { isCinemaMode, libraryPreferences, setLibraryPreference } = useAppStore();
@@ -149,11 +150,14 @@ export default function Library({ type, onMediaSelect, refreshTrigger, searchQue
                 />
               </div>
 
-              {item.is_unaired && (
-                <div className="absolute top-2 left-2 z-20">
-                  <div className="px-2 py-1 bg-blue-500/80 backdrop-blur-md rounded-md text-[10px] font-bold text-white shadow-md uppercase tracking-wider">
-                    Planned
-                  </div>
+              {(item.is_unaired || item.new_season) && (
+                <div className="absolute top-2 left-2 z-20 flex flex-col items-start gap-1">
+                  {item.is_unaired && (
+                    <div className="px-2 py-1 bg-blue-500/80 backdrop-blur-md rounded-md text-[10px] font-bold text-white shadow-md uppercase tracking-wider">
+                      Planned
+                    </div>
+                  )}
+                  <NewSeasonBadge season={item.new_season} />
                 </div>
               )}
 

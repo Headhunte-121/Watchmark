@@ -78,6 +78,7 @@ Plays of the same show less than 6 hours apart share a session ID, so they appea
 - **Recently Added:** newest titles in your library, with a one-click **Play Next**.
 - **Upcoming Airings:** the next scheduled episodes of tracked shows, with "Airing today" highlighted.
 - **New Season alerts:** a dismissible banner when a tracked show gets a new season.
+- **New Season badges:** posters (here and in the library) show a **New Season** badge for 30 days after a show's season 2 or later premieres. The badge follows each season's earliest episode air date, so it appears whether the season arrived through the background sync or when you added the show, and dismissing the banner doesn't remove it. On the show page, that season's tab is marked **New**.
 - **Stats:** shows tracked, hours watched and your average rating.
 
 ---

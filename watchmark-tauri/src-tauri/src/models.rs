@@ -190,6 +190,10 @@ pub struct Media {
     pub seasons: Vec<u32>,
     #[serde(default)]
     pub episodes: Vec<Episode>,
+    /// Season number (2 or later) that premiered within the last
+    /// `NEW_SEASON_WINDOW_DAYS` days, if any. Drives the "New Season" badge.
+    #[serde(default)]
+    pub new_season: Option<u32>,
 }
 
 #[allow(dead_code)]
