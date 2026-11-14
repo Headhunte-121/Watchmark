@@ -31,7 +31,13 @@ export async function invokeWithTimeout<T>(
   } catch (error: any) {
     logger.error(`Error in invokeWithTimeout for ${cmd}`, error);
 
-    let errMessage = error instanceof Error ? error.message : (typeof error === "string" ? error : JSON.stringify(error));
+    // Structured backend errors ({ type, code, message }) carry a readable
+    // message; show that instead of raw JSON in toasts.
+    let errMessage =
+      error instanceof Error ? error.message
+      : typeof error === "string" ? error
+      : error && typeof error === "object" && typeof error.message === "string" ? error.message
+      : JSON.stringify(error);
 
     // Specifically catch Data Mismatches or bounds issues and highlight them
     if (errMessage.includes("Data Mismatch") || errMessage.includes("out of range")) {

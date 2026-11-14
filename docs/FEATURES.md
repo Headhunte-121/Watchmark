@@ -168,6 +168,10 @@ Files the scanner couldn't match are grouped by their guessed show name.
 - **Global shortcuts:** `Ctrl+Shift+S` to scan and `Ctrl+Shift+H` to hide or show the window. If another app already uses a shortcut, you're told instead of the app failing.
 - **Window position and size** are restored on launch. If the saved position is on a monitor that's no longer connected, the window is centered on the main screen.
 - **Notifications** for events such as a missing file when resuming from the tray.
+- **Connection status:** WatchMark regularly checks whether TMDB answers, separately from general internet access.
+  - **TMDB blocked** (the internet works but TMDB doesn't, as with some providers such as Jio): a message explains this and suggests Cloudflare WARP or 1.1.1.1 DNS, with **Retry** and a link to WARP.
+  - **Offline:** a message says what still works.
+  - While either lasts, search and refresh are disabled with an explanation, background show updates pause, and TMDB requests fail immediately instead of timing out. The check repeats every 15 seconds; once TMDB answers again, you get a short confirmation, the paused show update runs, and failed image downloads are retried.
 - **Crash containment:** if a page fails to display, you get a recovery panel with **Try again** and **Reload app**, the rest of the app keeps working, and the error is written to `WatchMark.log`.
 
 ---

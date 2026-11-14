@@ -4,6 +4,16 @@ import { invoke } from '@tauri-apps/api/core';
 import { logger } from '../utils/logger';
 import type { HistoryPage, HistorySnapshot } from '../components/history/historyTypes';
 
+/** Mirrors `network::Connectivity` in the Rust backend. */
+export type Connectivity = 'unknown' | 'online' | 'tmdb_blocked' | 'offline';
+
+export interface ConnectivityReport {
+  status: Connectivity;
+  internet: boolean;
+  tmdb: boolean;
+  checked_at: number;
+}
+
 interface LibraryPreference {
   sortBy: string;
   hideCompleted: boolean;
@@ -14,7 +24,9 @@ interface AppState {
   isCinemaMode: boolean;
   initialized: boolean;
   isApiAuthorized: boolean;
+  /** True while TMDB can't be used (offline, or blocked on this network). */
   isOffline: boolean;
+  connectivity: Connectivity;
   searchQuery: string;
   libraryPreferences: {
     TV: LibraryPreference;
@@ -33,6 +45,7 @@ interface AppState {
   setCinemaMode: (mode: boolean) => Promise<void>;
   setApiAuthorized: (authorized: boolean) => void;
   setOffline: (offline: boolean) => void;
+  setConnectivity: (status: Connectivity) => void;
   initializeSettings: () => Promise<void>;
   prefetchHistory: () => Promise<void>;
 }
@@ -44,6 +57,7 @@ export const useAppStore = create<AppState>()(
   initialized: false,
   isApiAuthorized: true,
   isOffline: false,
+  connectivity: 'unknown',
   searchQuery: "",
   historyVersion: 0,
   historySnapshot: null,
@@ -67,6 +81,8 @@ export const useAppStore = create<AppState>()(
   })),
   setApiAuthorized: (authorized: boolean) => set({ isApiAuthorized: authorized }),
   setOffline: (offline: boolean) => set({ isOffline: offline }),
+  setConnectivity: (status) =>
+    set({ connectivity: status, isOffline: status === 'tmdb_blocked' || status === 'offline' }),
   setCinemaMode: async (mode: boolean) => {
     set({ isCinemaMode: mode });
     // Note: We intentionally do not auto-save to the backend here.

@@ -112,9 +112,24 @@ All external requests go through a shared client in `network.rs`:
 - HTTPS only, with rustls (no OpenSSL dependency);
 - a 5-second connect timeout and a 15-second overall timeout;
 - automatic retries with exponential backoff (up to 3) for transient failures;
+- a circuit breaker in front of the retries that fails TMDB requests immediately while TMDB is known to be unreachable;
 - a separate local client, without retries, for talking to VLC.
 
-The app contacts three kinds of hosts: the TMDB API, TMDB's image server, and, on first run only, a public GitLab mirror that hosts the Inter font file used by the UI.
+### Connectivity checks
+
+Some internet providers block TMDB while the rest of the internet works, so "offline" and "TMDB blocked" need different advice. A heartbeat in `main.rs` calls `network::check_connectivity()`, which makes three requests in parallel with short timeouts and no retries:
+
+| Request | Answer that counts as success |
+| :--- | :--- |
+| `https://www.gstatic.com/generate_204` | Any response below 500 |
+| `https://1.1.1.1/cdn-cgi/trace` | Any response below 500 |
+| `https://api.themoviedb.org/3/configuration` | 200 or 401 (TMDB answers 401 without an API key) |
+
+The result is **Online** (TMDB answered), **TmdbBlocked** (a test site answered but TMDB didn't) or **Offline** (nothing answered). It's stored in one shared value read by the circuit breaker, the background sync and the UI (via the `network-status` event and the `check_connectivity` command).
+
+The heartbeat runs at startup, then every 15 seconds while TMDB is unreachable and every 60 seconds otherwise. A connection error or timeout on a real TMDB request also triggers an immediate re-check. When the status returns to Online, `auto_updater::publish_connectivity` runs any background sync that was deferred and retries failed image downloads.
+
+The app contacts these hosts: the TMDB API, TMDB's image server, the two connectivity test endpoints above, and, on first run only, a public GitLab mirror that hosts the Inter font file used by the UI.
 
 ## Frontend structure
 

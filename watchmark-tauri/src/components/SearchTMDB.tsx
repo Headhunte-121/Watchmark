@@ -6,6 +6,7 @@ import { useAsyncInvoke } from "../hooks/useAsyncInvoke";
 import { logger } from "../utils/logger";
 import { motion } from "framer-motion";
 import { toast } from "../utils/toast";
+import { tmdbUnavailableReason } from "../utils/connectivity";
 import { useAppStore } from "../store/useAppStore";
 import { cn } from "../App";
 import { SafeImage } from "./ui/SafeImage";
@@ -36,7 +37,7 @@ export default function SearchTMDB({ initialQuery, onMediaSelect: _onMediaSelect
   const [_page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const asyncInvoke = useAsyncInvoke();
-  const { isApiAuthorized, isOffline } = useAppStore();
+  const { isApiAuthorized, isOffline, connectivity } = useAppStore();
   const observer = useRef<IntersectionObserver | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [filterType, setFilterType] = useState<"All" | "TV" | "Movies">("All");
@@ -244,7 +245,7 @@ export default function SearchTMDB({ initialQuery, onMediaSelect: _onMediaSelect
         <button
           type="submit"
           disabled={loading || !isApiAuthorized || isOffline}
-          title={isOffline ? "Requires internet connection." : ""}
+          title={isOffline ? tmdbUnavailableReason(connectivity) : ""}
           className={cn(
             "px-8 py-4 font-bold rounded-full transition-all shadow-lg",
             loading || !isApiAuthorized || isOffline

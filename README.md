@@ -169,7 +169,7 @@ There are no automated frontend or end-to-end tests yet. See [Testing](docs/test
 
 - **Windows only.** Some code is written to compile elsewhere, but only Windows 10/11 has been built and tested.
 - **VLC only.** Tracking depends on VLC's HTTP interface; other players aren't supported.
-- **Needs TMDB.** Adding shows and refreshing metadata require a TMDB API key and a network that can reach TMDB. Already-added shows and cached artwork keep working offline.
+- **Needs TMDB.** Adding shows and refreshing metadata require a TMDB API key and a network that can reach TMDB. Some internet providers (for example Jio) block TMDB. WatchMark detects this and suggests Cloudflare WARP or 1.1.1.1 DNS, which usually fixes it. Already-added shows, history, playback and cached artwork keep working either way.
 - **Older watch history.** Plays recorded before v1.2.1 have no saved progress because of a bug fixed in that release.
 - **Open issues** from a code audit are tracked for upcoming releases, including the TV and movie libraries loading only their first 50 items and a too-permissive local file access configuration.
 

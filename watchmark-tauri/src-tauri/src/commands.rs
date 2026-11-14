@@ -4630,3 +4630,16 @@ pub async fn dismiss_new_season_alert(media_id: i32) -> Result<(), AppError> {
 pub async fn trigger_auto_sync(app: tauri::AppHandle) -> Result<usize, AppError> {
     crate::auto_updater::run_background_auto_update(app, true).await
 }
+
+/// Checks TMDB reachability right away (the banner's Retry button, and the
+/// frontend's initial state), publishes the result and resumes deferred work
+/// if TMDB is reachable again.
+#[tauri::command]
+#[tracing::instrument(level = "debug", skip(app))]
+pub async fn check_connectivity(
+    app: tauri::AppHandle,
+) -> Result<crate::network::ConnectivityReport, AppError> {
+    let report = crate::network::check_connectivity().await;
+    crate::auto_updater::publish_connectivity(&app, &report);
+    Ok(report)
+}

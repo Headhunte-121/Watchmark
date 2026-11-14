@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 * **New Season badges**: Shows whose next season (season 2 or later) premiered in the last 30 days now carry an orange **New Season** badge on their posters in the TV library and the Dashboard's Recently Added row, and that season's tab is marked **New** on the show page.
+* **Help when TMDB is blocked**: WatchMark now tells the difference between being offline and TMDB being blocked on your network (which some internet providers, such as Jio, do). When TMDB is blocked, a message suggests turning on Cloudflare WARP or using 1.1.1.1 as your DNS, with a **Retry** button and a link to WARP.
+
+### Changed
+* **Offline detection** now checks TMDB itself, not just general internet access, and rechecks every 15 seconds while there's a problem, so it notices quickly when the connection comes back.
+* While TMDB can't be reached, actions that need it fail straight away with a clear explanation instead of waiting through long timeouts.
+
+### Fixed
+* The background show update kept retrying every show when TMDB was unreachable, then waited 12 hours before trying again. It now pauses while TMDB is unreachable and runs as soon as it's reachable again.
+* Images that failed to download are retried as soon as TMDB is reachable again, and ones that fail twice are no longer dropped from the retry queue.
+* Some error messages showed raw technical text such as `{"code":"OFFLINE",...}` instead of a readable message.
 
 ## [1.2.1] - 2026-11-08
 

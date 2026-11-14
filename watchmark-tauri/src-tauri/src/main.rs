@@ -421,49 +421,29 @@ fn main() {
                 }
             });
 
-            // Spawn low priority background image retry loop (runs every 30 mins)
+            // Retry failed image downloads every 30 minutes (and right after
+            // TMDB becomes reachable again; see auto_updater::publish_connectivity).
             let app_handle_for_retry = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1800)); // 30 minutes
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1800));
+                interval.tick().await; // skip the immediate first tick
                 loop {
                     interval.tick().await;
-
-                    let mut retries = Vec::new();
-                    {
-                        let mut queue = failed_image_sync_queue.write().unwrap();
-                        for item in queue.drain() {
-                            retries.push(item);
-                        }
-                    }
-
-                    if !retries.is_empty() {
-                        if let Some(state) = app_handle_for_retry.try_state::<commands::AppState>() {
-                            let hp_mode = state.settings.read().unwrap().high_performance_mode;
-                            for (path, size) in retries {
-                                tokio::task::yield_now().await; // prevent blocking
-                                let _ = crate::tmdb::download_image(&path, &size, hp_mode).await;
-                            }
-                        }
-                    }
+                    auto_updater::retry_failed_image_syncs(&app_handle_for_retry).await;
                 }
             });
 
-            // Spawn 30-second heartbeat to detect offline mode
+            // Connectivity heartbeat: checks a neutral test site and TMDB
+            // separately so "TMDB blocked by the ISP" is told apart from
+            // "offline". Checks often while degraded so recovery is noticed
+            // quickly, and rarely while everything works.
             let app_handle_for_heartbeat = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
-                let client = reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(5))
-                    .build()
-                    .unwrap_or_default();
                 loop {
-                    interval.tick().await;
-                    // Attempt to ping 1.1.1.1 or TMDB base URL to ensure actual internet access
-                    let is_online = match client.get("https://1.1.1.1").send().await {
-                        Ok(res) => res.status().is_success(),
-                        Err(_) => false,
-                    };
-                    let _ = app_handle_for_heartbeat.emit("network-status", serde_json::json!({ "online": is_online }));
+                    let report = network::check_connectivity().await;
+                    auto_updater::publish_connectivity(&app_handle_for_heartbeat, &report);
+                    let wait = if report.status.is_degraded() { 15 } else { 60 };
+                    tokio::time::sleep(tokio::time::Duration::from_secs(wait)).await;
                 }
             });
 
@@ -818,6 +798,7 @@ fn main() {
             commands::get_new_season_alerts,
             commands::dismiss_new_season_alert,
             commands::trigger_auto_sync,
+            commands::check_connectivity,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -10,6 +10,7 @@ import { formatLocaleDate, formatRuntime } from "../utils/dateFormatter";
 import { useUiStore } from "../store/uiStore";
 import { useAsyncInvoke } from "../hooks/useAsyncInvoke";
 import { toast } from "../utils/toast";
+import { tmdbUnavailableReason } from "../utils/connectivity";
 import { StarRating } from "./ui/StarRating";
 import { useAppStore } from "../store/useAppStore";
 import { cn } from "../App";
@@ -18,7 +19,7 @@ import { SafeImage } from "./ui/SafeImage";
 
 export default function MediaDetails({ mediaId, initialSeasonNum, onBack, refreshTrigger }: any) {
   const { showConfirm, setProcessing } = useUiStore();
-  const { isApiAuthorized, isOffline, isCinemaMode } = useAppStore();
+  const { isApiAuthorized, isOffline, isCinemaMode, connectivity } = useAppStore();
   const [data, setData] = useState<any>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [activeSeason, setActiveSeason] = useState<number>(1);
@@ -347,7 +348,7 @@ export default function MediaDetails({ mediaId, initialSeasonNum, onBack, refres
                     return;
                 }
                 if (isOffline) {
-                    toast.error("Cannot refresh data while offline.");
+                    toast.error(tmdbUnavailableReason(connectivity));
                     return;
                 }
                 logger.click(`'Refresh Data' for '${data.title}'`);
@@ -372,7 +373,7 @@ export default function MediaDetails({ mediaId, initialSeasonNum, onBack, refres
                 }
               }}
               disabled={isRefreshing || !isApiAuthorized || isOffline}
-              title={isOffline ? "Requires internet connection." : !isApiAuthorized ? "API Key required" : "Refresh metadata from TMDB"}
+              title={isOffline ? tmdbUnavailableReason(connectivity) : !isApiAuthorized ? "API Key required" : "Refresh metadata from TMDB"}
               className={cn(
                 "flex items-center gap-2 px-6 py-4 font-bold rounded-full backdrop-blur-md transition-all",
                 isRefreshing || !isApiAuthorized || isOffline
@@ -551,7 +552,7 @@ export default function MediaDetails({ mediaId, initialSeasonNum, onBack, refres
                     return;
                   }
                   if (isOffline) {
-                    toast.error("Cannot refresh data while offline.");
+                    toast.error(tmdbUnavailableReason(connectivity));
                     return;
                   }
                   logger.click(`'Refresh Data' for '${data.title}' season ${activeSeason}`);

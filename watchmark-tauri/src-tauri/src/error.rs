@@ -40,6 +40,10 @@ pub enum AppError {
 
     #[error("Network Offline")]
     NetworkOffline,
+
+    /// The internet works but TMDB can't be reached (e.g. blocked by the ISP).
+    #[error("TMDB is unreachable from this network")]
+    TmdbUnreachable,
 }
 
 // Serialize the error to send to the frontend
@@ -73,6 +77,16 @@ impl Serialize for AppError {
                 state.serialize_field("type", "NetworkError")?;
                 state.serialize_field("code", "OFFLINE")?;
                 state.serialize_field("message", "You are currently offline.")?;
+                state.end()
+            }
+            AppError::TmdbUnreachable => {
+                let mut state = serializer.serialize_struct("AppError", 3)?;
+                state.serialize_field("type", "NetworkError")?;
+                state.serialize_field("code", "TMDB_BLOCKED")?;
+                state.serialize_field(
+                    "message",
+                    "TMDB can't be reached from this network. Some internet providers block it; turning on Cloudflare WARP or using 1.1.1.1 as your DNS usually fixes this.",
+                )?;
                 state.end()
             }
             AppError::AccessDenied { code, path } => {

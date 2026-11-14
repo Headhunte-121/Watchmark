@@ -11,8 +11,10 @@ use chrono::{Local, NaiveDate};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use crate::network::{self, Connectivity, ConnectivityReport};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::time::sleep;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -339,6 +341,31 @@ pub async fn run_background_auto_update(app: AppHandle, force: bool) -> Result<u
         return Ok(0);
     }
 
+    // Don't start a sync TMDB can't answer. Mark it pending instead: it runs
+    // as soon as connectivity is restored, and the "last synced" time is left
+    // untouched so the 12-hour guard doesn't swallow the retry.
+    let mut state = network::connectivity();
+    if state == Connectivity::Unknown {
+        state = network::check_connectivity().await.status;
+    }
+    if state.is_degraded() {
+        AUTO_SYNC_PENDING.store(true, Ordering::SeqCst);
+        tracing::info!(action = "auto_update_deferred", status = ?state, "TMDB unreachable; background sync deferred until it is reachable");
+        return Ok(0);
+    }
+
+    if AUTO_SYNC_RUNNING.swap(true, Ordering::SeqCst) {
+        tracing::debug!(action = "auto_update_skip", "Auto-update already running");
+        return Ok(0);
+    }
+    struct RunningGuard;
+    impl Drop for RunningGuard {
+        fn drop(&mut self) {
+            AUTO_SYNC_RUNNING.store(false, Ordering::SeqCst);
+        }
+    }
+    let _running = RunningGuard;
+
     tracing::info!(action = "auto_update_start", count = tracked_shows.len(), "Starting background auto-update for tracked shows");
 
     let mut updated_count = 0;
@@ -348,6 +375,16 @@ pub async fn run_background_auto_update(app: AppHandle, force: bool) -> Result<u
                 if has_updates {
                     updated_count += 1;
                 }
+            }
+            Err(e) if is_connectivity_error(&e) => {
+                // Every remaining show would fail the same way: stop, keep the
+                // previous sync time, and resume when TMDB is reachable again.
+                AUTO_SYNC_PENDING.store(true, Ordering::SeqCst);
+                tracing::warn!(action = "auto_update_aborted", show = %show.title, error = ?e, "TMDB became unreachable; background sync paused until it is reachable");
+                if updated_count > 0 {
+                    let _ = app.emit("shows-auto-updated", json!({ "updated_count": updated_count }));
+                }
+                return Ok(updated_count);
             }
             Err(e) => {
                 tracing::warn!(action = "auto_update_error", show = %show.title, error = ?e, "Failed to auto-update show");
@@ -368,4 +405,81 @@ pub async fn run_background_auto_update(app: AppHandle, force: bool) -> Result<u
     }
 
     Ok(updated_count)
+}
+
+// ---------------------------------------------------------------------------
+// Connectivity: publishing status and recovering after an outage
+// ---------------------------------------------------------------------------
+
+/// Set when a background sync was skipped or interrupted because TMDB was
+/// unreachable; cleared when the deferred sync starts.
+pub static AUTO_SYNC_PENDING: AtomicBool = AtomicBool::new(false);
+static AUTO_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
+/// Last status sent to the UI, so transitions are detected even when the
+/// status was changed by something other than the heartbeat.
+static LAST_PUBLISHED: AtomicU8 = AtomicU8::new(Connectivity::Unknown as u8);
+
+fn is_connectivity_error(e: &AppError) -> bool {
+    matches!(
+        e,
+        AppError::TmdbUnreachable | AppError::NetworkOffline | AppError::NetworkTimeout
+    )
+}
+
+/// Sends a connectivity report to the UI and, when TMDB is reachable, starts
+/// any work that was deferred while it wasn't.
+pub fn publish_connectivity(app: &AppHandle, report: &ConnectivityReport) {
+    let previous = LAST_PUBLISHED.swap(report.status as u8, Ordering::SeqCst);
+    let _ = app.emit("network-status", report);
+
+    if report.status != Connectivity::Online {
+        return;
+    }
+
+    let recovered = previous == Connectivity::TmdbBlocked as u8 || previous == Connectivity::Offline as u8;
+    if recovered {
+        tracing::info!(action = "connectivity_restored", "[NETWORK] ✅ TMDB reachable again; resuming deferred work");
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            retry_failed_image_syncs(&handle).await;
+        });
+    }
+
+    if AUTO_SYNC_PENDING.swap(false, Ordering::SeqCst) {
+        let handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = run_background_auto_update(handle, false).await;
+        });
+    }
+}
+
+/// Retries image downloads that failed earlier. Images that fail again are
+/// put back in the queue for the next attempt.
+pub async fn retry_failed_image_syncs(app: &AppHandle) {
+    if network::connectivity().is_degraded() {
+        return;
+    }
+    let Some(state) = app.try_state::<crate::commands::AppState>() else {
+        return;
+    };
+    let pending: Vec<(String, String)> = match state.failed_image_syncs.write() {
+        Ok(mut queue) => queue.drain().collect(),
+        Err(_) => return,
+    };
+    if pending.is_empty() {
+        return;
+    }
+    let hp_mode = state.settings.read().map(|s| s.high_performance_mode).unwrap_or(false);
+    let mut still_failing = Vec::new();
+    for (path, size) in pending {
+        tokio::task::yield_now().await;
+        if crate::tmdb::download_image(&path, &size, hp_mode).await.is_none() {
+            still_failing.push((path, size));
+        }
+    }
+    if !still_failing.is_empty() {
+        if let Ok(mut queue) = state.failed_image_syncs.write() {
+            queue.extend(still_failing);
+        }
+    }
 }

@@ -6037,6 +6037,8 @@ dependencies = [
 name = "watchmark-tauri"
 version = "1.2.1"
 dependencies = [
+ "anyhow",
+ "async-trait",
  "base64 0.22.1",
  "chrono",
  "chrono-tz",
