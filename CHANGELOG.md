@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * The background show update kept retrying every show when TMDB was unreachable, then waited 12 hours before trying again. It now pauses while TMDB is unreachable and runs as soon as it's reachable again.
 * Images that failed to download are retried as soon as TMDB is reachable again, and ones that fail twice are no longer dropped from the retry queue.
 * Some error messages showed raw technical text such as `{"code":"OFFLINE",...}` instead of a readable message.
+* **"VLC Authentication Error" when starting an episode**: some files (for example ones with an unusual audio track) made VLC print harmless warnings that WatchMark mistook for a failure, so it closed VLC and showed this error, often when switching from one episode to another. Launch success is now judged by whether VLC actually starts and responds.
+* **Slow Play button**: pressing Play no longer waits up to 2 seconds before responding; VLC opens in the background.
+* Switching episodes no longer reports the closed episode as "Playback interrupted", and a session can no longer lose progress tracking because the previous one was closed.
+* If VLC is playing but WatchMark can't read its progress, or VLC closes before playback starts, you now get a message explaining it instead of nothing happening.
 
 ## [1.2.1] - 2026-11-08
 

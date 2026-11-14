@@ -17,12 +17,58 @@ use crate::network::NETWORK_MANAGER;
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 use std::net::TcpListener;
-use tokio::io::AsyncReadExt;
+use std::collections::{HashSet, VecDeque};
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 lazy_static::lazy_static! {
+    /// PID of the VLC instance WatchMark is currently tracking.
     static ref ACTIVE_VLC: Mutex<Option<u32>> = Mutex::new(None);
-    static ref VLC_PORT: Mutex<u16> = Mutex::new(8080);
-    static ref VLC_PASSWORD: Mutex<String> = Mutex::new(String::new());
+    /// PIDs WatchMark closed on purpose (to start another episode). Their
+    /// exit is expected and must not be reported as a crash.
+    static ref REPLACED_VLC: Mutex<HashSet<u32>> = Mutex::new(HashSet::new());
+    /// Serialises launches so a double click can't start two VLCs.
+    static ref LAUNCH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::new(());
+}
+
+/// How long a new VLC gets to bring up its HTTP interface. Cold starts on a
+/// slow disk can take several seconds.
+const VLC_STARTUP_GRACE: Duration = Duration::from_secs(15);
+/// Lines of VLC's own log kept for diagnostics.
+const VLC_LOG_TAIL: usize = 40;
+
+/// Connection details for one VLC session.
+#[derive(Clone)]
+pub struct VlcEndpoint {
+    pub port: u16,
+    pub password: String,
+}
+
+/// Keeps the last lines VLC printed, so a failed launch can be diagnosed
+/// from WatchMark.log. VLC routinely prints harmless "error" lines (for
+/// example about an audio track), so these lines are never used to decide
+/// whether a launch worked.
+fn collect_vlc_log(stderr: tokio::process::ChildStderr) -> Arc<Mutex<VecDeque<String>>> {
+    let tail = Arc::new(Mutex::new(VecDeque::with_capacity(VLC_LOG_TAIL)));
+    let sink = tail.clone();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Ok(mut buf) = sink.lock() {
+                if buf.len() == VLC_LOG_TAIL {
+                    buf.pop_front();
+                }
+                buf.push_back(line);
+            }
+        }
+    });
+    tail
+}
+
+fn log_tail(tail: &Arc<Mutex<VecDeque<String>>>) -> String {
+    tail.lock()
+        .map(|b| b.iter().cloned().collect::<Vec<_>>().join("\n"))
+        .unwrap_or_default()
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -37,7 +83,10 @@ pub async fn kill_active_vlc() {
     };
 
     if let Some(pid) = pid_to_kill {
-        tracing::info!("[VLC] 🛑 Killing previous VLC instance (PID {})...", pid);
+        if let Ok(mut replaced) = REPLACED_VLC.lock() {
+            replaced.insert(pid);
+        }
+        tracing::info!("[VLC] 🛑 Closing previous VLC instance (PID {}) to start another episode...", pid);
         #[cfg(unix)]
         {
             let _ = Command::new("kill")
@@ -58,7 +107,7 @@ pub async fn kill_active_vlc() {
     }
 }
 
-pub fn play_in_vlc(vlc_path: &str, file_path: &str, start_time: i32) -> Result<Child, AppError> {
+pub fn play_in_vlc(vlc_path: &str, file_path: &str, start_time: i32) -> Result<(Child, VlcEndpoint), AppError> {
     // Generate a secure 16-character alphanumeric password
     let password: String = rand::thread_rng()
         .sample_iter(&Alphanumeric)
@@ -78,13 +127,6 @@ pub fn play_in_vlc(vlc_path: &str, file_path: &str, start_time: i32) -> Result<C
                 "Could not find a free port for VLC HTTP interface.".to_string(),
             ));
         }
-    }
-
-    {
-        let mut p_lock = VLC_PORT.lock().unwrap();
-        *p_lock = port;
-        let mut pw_lock = VLC_PASSWORD.lock().unwrap();
-        *pw_lock = password.clone();
     }
 
     // Determine path based on OS logic (Verbatim for Windows)
@@ -118,7 +160,7 @@ pub fn play_in_vlc(vlc_path: &str, file_path: &str, start_time: i32) -> Result<C
 
     let mut cmd = Command::from(std_cmd);
 
-    // Capture stderr to check for binding/auth errors, while ignoring stdout
+    // stderr is kept for diagnostics only (see collect_vlc_log).
     cmd.stdout(Stdio::null()).stderr(Stdio::piped());
 
     cmd.arg(&safe_file_path)
@@ -155,8 +197,10 @@ pub fn play_in_vlc(vlc_path: &str, file_path: &str, start_time: i32) -> Result<C
         }
     }
 
-    cmd.spawn()
-        .map_err(|e| AppError::Custom(format!("Failed to start VLC: {}", e)))
+    let child = cmd
+        .spawn()
+        .map_err(|e| AppError::Custom(format!("Failed to start VLC: {}", e)))?;
+    Ok((child, VlcEndpoint { port, password }))
 }
 
 #[derive(serde::Deserialize)]
@@ -166,22 +210,12 @@ pub struct VlcStatus {
     pub state: Option<String>,
 }
 
-pub async fn get_vlc_status() -> Option<VlcStatus> {
-    let (port, password) = {
-        let p_lock = VLC_PORT.lock().unwrap();
-        let pw_lock = VLC_PASSWORD.lock().unwrap();
-        (*p_lock, pw_lock.clone())
-    };
-
-    if password.is_empty() {
-        return None;
-    }
-
+pub async fn get_vlc_status(endpoint: &VlcEndpoint) -> Option<VlcStatus> {
     if let Ok(res) = NETWORK_MANAGER
         .local_client
-        .get(&format!("http://127.0.0.1:{}/requests/status.json", port))
+        .get(&format!("http://127.0.0.1:{}/requests/status.json", endpoint.port))
         .timeout(Duration::from_secs(1))
-        .basic_auth("", Some(password))
+        .basic_auth("", Some(&endpoint.password))
         .send()
         .await
     {
@@ -194,11 +228,17 @@ pub async fn get_vlc_status() -> Option<VlcStatus> {
 
 pub async fn vlc_heartbeat(
     mut proc: Child,
+    endpoint: VlcEndpoint,
+    vlc_log: Arc<Mutex<VecDeque<String>>>,
     episode_id: i32,
     session_id: String,
     start_dt_str: String,
     app_handle: AppHandle,
 ) {
+    let pid = proc.id();
+    let mut ever_connected = false;
+    let mut warned_untracked = false;
+    let mut reported_zero_length = false;
     tracing::info!("[VLC] 💓 Establishing VLC Heartbeat connection...");
     let mut high_water_mark: f64 = 0.0;
     let mut last_time_seconds: f64 = 0.0;
@@ -256,11 +296,15 @@ pub async fn vlc_heartbeat(
 
         tokio::select! {
             _ = tokio::time::sleep(tick_duration) => {
-                if is_initial_probe && probe_start.elapsed() > Duration::from_secs(3) {
+                if is_initial_probe && probe_start.elapsed() > VLC_STARTUP_GRACE {
                     is_initial_probe = false;
                 }
 
-                if let Some(status) = get_vlc_status().await {
+                if let Some(status) = get_vlc_status(&endpoint).await {
+                    if !ever_connected {
+                        tracing::info!("[VLC] ✅ VLC interface answered after {} ms", probe_start.elapsed().as_millis());
+                    }
+                    ever_connected = true;
                     is_initial_probe = false;
                     consecutive_failures = 0;
 
@@ -331,8 +375,14 @@ pub async fn vlc_heartbeat(
                                 length_averaging_buffer.clear();
                             }
                         }
-                    } else if length == 0.0 {
-                        // Handle Live Stream or corrupted index
+                    } else if length == 0.0
+                        && !reported_zero_length
+                        && probe_start.elapsed() > Duration::from_secs(5)
+                    {
+                        // Still no length 5s in: a live stream or a file without
+                        // an index. (VLC always reports 0 for the first moments
+                        // while it opens the file, so earlier polls don't count.)
+                        reported_zero_length = true;
                         tracing::warn!("[VLC] ⚠️ VLC reported length 0. Activating fallback.");
                         let _ = app_handle.emit("vlc-livestream-fallback", json!({ "episode_id": episode_id }));
                     }
@@ -407,36 +457,49 @@ pub async fn vlc_heartbeat(
                             break;
                         }
                     }
-                } else {
-                    if !is_initial_probe {
-                        consecutive_failures += 1;
-                        if consecutive_failures >= 3 {
-                            // Assume VLC has crashed or disconnected
-                            tracing::warn!("[VLC] ⚠️ Heartbeat missed 3 times. Assuming disconnect.");
-                            break;
-                        }
+                } else if ever_connected {
+                    consecutive_failures += 1;
+                    if consecutive_failures >= 3 {
+                        // Assume VLC has crashed or disconnected
+                        tracing::warn!("[VLC] ⚠️ Heartbeat missed 3 times. Assuming disconnect.");
+                        break;
                     }
+                } else if !is_initial_probe && !warned_untracked {
+                    // VLC is running but its interface never came up (for
+                    // example the HTTP module is disabled). Keep the session
+                    // open until VLC exits, but tell the user.
+                    warned_untracked = true;
+                    tracing::warn!(
+                        "[VLC] ⚠️ VLC interface didn't answer within {}s; progress can't be tracked. VLC log:\n{}",
+                        VLC_STARTUP_GRACE.as_secs(),
+                        log_tail(&vlc_log)
+                    );
+                    let _ = app_handle.emit("vlc-tracking-unavailable", serde_json::json!({ "episodeId": episode_id }));
                 }
             }
             status = proc.wait() => {
                 // VLC process has exited
                 tracing::info!("[VLC] 🛑 VLC Process terminated with status: {:?}", status);
-                if let Ok(exit_status) = status {
-                    if !exit_status.success() {
-                        let _ = app_handle.emit("vlc-crashed", serde_json::json!({
-                            "message": "Playback Interrupted"
-                        }));
-                    }
+                let replaced = pid
+                    .and_then(|id| REPLACED_VLC.lock().ok().map(|mut set| set.remove(&id)))
+                    .unwrap_or(false);
+                let failed = status.map(|s| !s.success()).unwrap_or(true);
+                if replaced {
+                    tracing::info!("[VLC] Previous episode closed to start another one.");
+                } else if failed && !ever_connected {
+                    tracing::error!("[VLC] 🚨 VLC exited before playback started. VLC log:\n{}", log_tail(&vlc_log));
+                    let _ = app_handle.emit("vlc-launch-failed", serde_json::json!({
+                        "episodeId": episode_id,
+                        "message": "VLC closed before playback started. Check that the file plays in VLC on its own."
+                    }));
+                } else if failed {
+                    let _ = app_handle.emit("vlc-crashed", serde_json::json!({
+                        "message": "Playback Interrupted"
+                    }));
                 }
                 break;
             }
         }
-    }
-
-    // Clear password from memory when session ends
-    {
-        let mut pw_lock = VLC_PASSWORD.lock().unwrap();
-        *pw_lock = String::new();
     }
 
     let end_dt_str = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -678,48 +741,20 @@ pub async fn play_episode_cmd(
     };
     let start_sec = if raw_pos > 0 { raw_pos } else { 0 };
 
+    // One launch at a time: a double click must not start two VLCs.
+    let _launch_guard = LAUNCH_LOCK.lock().await;
+
     kill_active_vlc().await;
 
     match play_in_vlc(&canonical_vlc.to_string_lossy(), &file_path, start_sec) {
-        Ok(mut proc) => {
-            // Non-blocking loop to check stderr for 2 seconds
-            if let Some(mut stderr) = proc.stderr.take() {
-                let start_time = std::time::Instant::now();
-                let mut error_detected = false;
-                let mut buffer = [0; 1024];
-
-                while start_time.elapsed() < Duration::from_secs(2) {
-                    if let Ok(bytes_read) =
-                        tokio::time::timeout(Duration::from_millis(100), stderr.read(&mut buffer))
-                            .await
-                    {
-                        if let Ok(n) = bytes_read {
-                            if n > 0 {
-                                let err_str = String::from_utf8_lossy(&buffer[..n]).to_lowercase();
-                                if err_str.contains("password")
-                                    || err_str.contains("bind")
-                                    || err_str.contains("error")
-                                {
-                                    error_detected = true;
-                                    break;
-                                }
-                            } else {
-                                break; // EOF
-                            }
-                        }
-                    }
-
-                    // Check if heartbeat is already responding, meaning VLC is fully up and running
-                    if get_vlc_status().await.is_some() {
-                        break;
-                    }
-                }
-
-                if error_detected {
-                    let _ = proc.kill().await;
-                    return Err(AppError::Custom("VLC_AUTH_ERROR".to_string()));
-                }
-            }
+        Ok((mut proc, endpoint)) => {
+            // Return to the UI right away. Whether VLC actually came up is
+            // decided in the heartbeat by its HTTP interface answering, not by
+            // scanning VLC's log for the word "error" (it prints harmless ones).
+            let vlc_log = match proc.stderr.take() {
+                Some(stderr) => collect_vlc_log(stderr),
+                None => Arc::new(Mutex::new(VecDeque::new())),
+            };
 
             let mut session_id = uuid::Uuid::new_v4().to_string();
             let start_dt_str = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -798,7 +833,7 @@ pub async fn play_episode_cmd(
             }
 
             tokio::spawn(async move {
-                vlc_heartbeat(proc, episode_id, session_id, start_dt_str, app_handle).await;
+                vlc_heartbeat(proc, endpoint, vlc_log, episode_id, session_id, start_dt_str, app_handle).await;
 
                 // Clean up PID when process naturally exits, but only if it's OUR process
                 if let Some(pid) = proc_id {

@@ -153,6 +153,19 @@ function App() {
       useAppStore.getState().bumpHistoryVersion();
     });
 
+    // VLC started but exited before playback began (bad file, codec problem, ...).
+    const unlistenVlcLaunchFailed = listen<{ message?: string }>("vlc-launch-failed", (event) => {
+      toast.error(event.payload?.message || "VLC closed before playback started.", { duration: 8000 });
+    });
+
+    // VLC is playing, but its web interface never answered, so progress can't be saved.
+    const unlistenVlcUntracked = listen("vlc-tracking-unavailable", () => {
+      toast.info(
+        "VLC is playing, but WatchMark can't read its progress, so this session won't be saved. Make sure VLC's web interface isn't disabled or blocked by a firewall.",
+        { duration: 10000 },
+      );
+    });
+
     // Removals made from the History tab: refresh dashboard stats only.
     // The History tab already reflects the change locally.
     const unlistenHistoryChanged = listen("history-changed", () => {
@@ -263,6 +276,8 @@ function App() {
       unlisten.then(fn => fn());
       unlistenSessionEnded.then(fn => fn());
       unlistenHistoryChanged.then(fn => fn());
+      unlistenVlcLaunchFailed.then(fn => fn());
+      unlistenVlcUntracked.then(fn => fn());
       unlistenMediaDeleted.then(fn => fn());
       unlistenResize.then(fn => fn());
       unlistenProgress.then(fn => fn());
